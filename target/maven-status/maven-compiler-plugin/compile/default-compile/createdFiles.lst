@@ -1,5 +1,7 @@
+com/threadsdemo/advanced/ThreadLocalDemo$RequestContext.class
 com/threadsdemo/multithreading/Stack.class
 com/threadsdemo/advanced/ReentrantLockDemo.class
+com/threadsdemo/advanced/ThreadLocalDemo.class
 com/threadsdemo/advanced/AtomicDemo$1User.class
 com/threadsdemo/advanced/Cache.class
 com/threadsdemo/multithreading/BlockingQueue.class
@@ -11,6 +13,9 @@ com/threadsdemo/advanced/ExecutorServiceDemo.class
 com/threadsdemo/advanced/ReadWriteLockDemo.class
 com/threadsdemo/multithreading/Thread2.class
 com/threadsdemo/advanced/ExecutorServiceDemo$1.class
+com/threadsdemo/advanced/PhaserExchangerDemo.class
+com/threadsdemo/advanced/BlockingQueueDemo$Order.class
 com/threadsdemo/advanced/AtomicDemo.class
 com/threadsdemo/advanced/VirtualThreadsDemo.class
 com/threadsdemo/advanced/ReentrantLockDemo$BoundedBuffer.class
+com/threadsdemo/advanced/BlockingQueueDemo.class

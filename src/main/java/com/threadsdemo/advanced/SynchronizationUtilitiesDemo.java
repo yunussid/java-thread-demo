@@ -1,16 +1,29 @@
 package com.threadsdemo.advanced;
 
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
  * SYNCHRONIZATION UTILITIES DEMO
  * ═══════════════════════════════════════════════════════════════════════════════
  *
- * Java provides utility classes for thread coordination:
- * - Semaphore: Limit concurrent access to a resource
- * - CountDownLatch: Wait for N events (one-time)
- * - CyclicBarrier: Synchronize N threads (reusable)
+ * Real-world demonstrations of core java.util.concurrent utilities:
+ *
+ * 1. Semaphore   — "The Traffic Controller"
+ *    Throttling access to a legacy database that supports only N connections.
+ *
+ * 2. CountDownLatch — "The One-Time Gate"
+ *    Main thread waits for multiple background services to report "Ready."
+ *
+ * 3. CyclicBarrier  — "The Reusable Meeting Point"
+ *    Parallel processing of 1M records in chunks; threads aggregate results
+ *    at a barrier before moving to the next processing phase.
+ *
+ * Key Distinction:
+ *   • Semaphore has no ownership — any thread can release a permit.
+ *   • CountDownLatch is one-shot — once the count reaches zero, it's done.
+ *   • CyclicBarrier is reusable — it resets after all threads arrive.
  *
  * ═══════════════════════════════════════════════════════════════════════════════
  */
@@ -20,124 +33,175 @@ public class SynchronizationUtilitiesDemo {
         System.out.println("=== Synchronization Utilities Demo ===\n");
 
         semaphoreDemo();
+        System.out.println("═".repeat(70) + "\n");
+
         countDownLatchDemo();
+        System.out.println("═".repeat(70) + "\n");
+
         cyclicBarrierDemo();
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // 1. SEMAPHORE — The Traffic Controller
+    // ──────────────────────────────────────────────────────────────────────
+
     /**
-     * Semaphore - Limit concurrent access
+     * Use Case: Your microservice talks to a legacy database that can only
+     * handle 3 concurrent connections. A Semaphore with 3 permits prevents
+     * the system from overwhelming the database.
+     *
+     * Key: Unlike a lock, a Semaphore has NO owner — any thread can release
+     * a permit, even if it didn't acquire it.
      */
     static void semaphoreDemo() throws InterruptedException {
-        System.out.println("--- Semaphore Demo ---");
-        System.out.println("Simulating connection pool with max 3 connections\n");
+        System.out.println("--- Semaphore: The Traffic Controller ---");
+        System.out.println("Legacy DB supports max 3 concurrent connections.");
+        System.out.println("8 service threads compete for access.\n");
 
-        // Only 3 permits available (like 3 database connections)
-        Semaphore connectionPool = new Semaphore(3);
+        final int MAX_DB_CONNECTIONS = 3;
+        Semaphore connectionPool = new Semaphore(MAX_DB_CONNECTIONS, true); // fair
 
-        // Create 8 tasks wanting to use connections
         Thread[] threads = new Thread[8];
         for (int i = 0; i < 8; i++) {
-            final int userId = i + 1;
+            final int serviceId = i + 1;
             threads[i] = new Thread(() -> {
                 try {
-                    System.out.println("User " + userId + " waiting for connection...");
+                    System.out.printf("  Service-%d  → requesting DB connection …%n", serviceId);
 
-                    connectionPool.acquire();  // Wait for permit
+                    connectionPool.acquire();  // blocks until a permit is available
 
-                    System.out.println("User " + userId + " GOT connection! " +
-                        "(Available: " + connectionPool.availablePermits() + ")");
+                    System.out.printf("  Service-%d  ✓ CONNECTED  (available permits: %d)%n",
+                            serviceId, connectionPool.availablePermits());
 
-                    // Use the connection
-                    Thread.sleep(1000);
+                    // simulate query execution
+                    Thread.sleep(800 + ThreadLocalRandom.current().nextInt(400));
 
-                    System.out.println("User " + userId + " releasing connection");
-                    connectionPool.release();  // Release permit
+                    System.out.printf("  Service-%d  ← releasing connection%n", serviceId);
+                    connectionPool.release();
 
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-            }, "User-" + userId);
+            }, "Service-" + serviceId);
             threads[i].start();
-            Thread.sleep(100);  // Stagger start times
+            Thread.sleep(80);  // stagger start times for readable output
         }
 
         for (Thread t : threads) t.join();
-        System.out.println("\nAll users done!\n");
+        System.out.println("\n✔ All services finished their DB work.\n");
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // 2. COUNT-DOWN LATCH — The One-Time Gate
+    // ──────────────────────────────────────────────────────────────────────
+
     /**
-     * CountDownLatch - Wait for N events to complete
+     * Use Case: Initializing a complex service. The main thread waits for
+     * five background subsystems (DB, Kafka, Cache, Config, HealthCheck)
+     * to report "Ready" before the application starts accepting traffic.
+     *
+     * A CountDownLatch is one-shot — once the count reaches zero, the gate
+     * opens permanently and can never be reset.
      */
     static void countDownLatchDemo() throws InterruptedException {
-        System.out.println("--- CountDownLatch Demo ---");
-        System.out.println("Main thread waiting for 3 workers to complete\n");
+        System.out.println("--- CountDownLatch: Service Initialization Gate ---");
+        System.out.println("Main thread waits for 5 subsystems to become ready.\n");
 
-        int workerCount = 3;
-        CountDownLatch latch = new CountDownLatch(workerCount);
+        String[] subsystems = {"Database", "Kafka", "Redis-Cache", "Config-Server", "HealthCheck"};
+        CountDownLatch readyLatch = new CountDownLatch(subsystems.length);
 
-        for (int i = 1; i <= workerCount; i++) {
-            final int workerId = i;
+        for (String subsystem : subsystems) {
             new Thread(() -> {
                 try {
-                    System.out.println("Worker " + workerId + " started");
-                    Thread.sleep(workerId * 500);  // Different completion times
-                    System.out.println("Worker " + workerId + " finished");
+                    int bootTimeMs = 300 + ThreadLocalRandom.current().nextInt(1200);
+                    System.out.printf("  [%s] booting … (%d ms)%n", subsystem, bootTimeMs);
+                    Thread.sleep(bootTimeMs);
 
-                    latch.countDown();  // Decrement count
-                    System.out.println("Latch count: " + latch.getCount());
+                    readyLatch.countDown();
+                    System.out.printf("  [%s] ✓ READY  (remaining: %d)%n",
+                            subsystem, readyLatch.getCount());
 
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-            }, "Worker-" + workerId).start();
+            }, subsystem).start();
         }
 
-        System.out.println("Main thread waiting...");
-        latch.await();  // Block until count reaches 0
-        System.out.println("All workers completed! Main thread continues.\n");
+        System.out.println("  ⏳ Main thread waiting for all subsystems …\n");
+        readyLatch.await();  // blocks until count == 0
+
+        System.out.println("\n  🚀 ALL SUBSYSTEMS READY — Application is now accepting traffic!\n");
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // 3. CYCLIC BARRIER — The Reusable Meeting Point
+    // ──────────────────────────────────────────────────────────────────────
+
     /**
-     * CyclicBarrier - Threads wait for each other
+     * Use Case: Processing 1,000,000 records in 4 chunks (250k each).
+     * Each worker thread processes its chunk independently, then all threads
+     * wait at the barrier so we can aggregate partial results before moving
+     * to the next processing phase.
+     *
+     * CyclicBarrier is reusable — it resets automatically after all parties
+     * arrive, so it works naturally for multi-phase pipelines.
      */
     static void cyclicBarrierDemo() throws InterruptedException {
-        System.out.println("--- CyclicBarrier Demo ---");
-        System.out.println("3 threads doing 2 phases, waiting for each other at barriers\n");
+        System.out.println("--- CyclicBarrier: Parallel Chunk Processing ---");
+        System.out.println("Processing 1,000,000 records in 4 chunks across 2 phases.\n");
 
-        int partySize = 3;
+        final int TOTAL_RECORDS = 1_000_000;
+        final int CHUNK_COUNT = 4;
+        final int CHUNK_SIZE = TOTAL_RECORDS / CHUNK_COUNT;
 
-        // Barrier with action when all threads arrive
-        CyclicBarrier barrier = new CyclicBarrier(partySize, () -> {
-            System.out.println(">>> All threads reached barrier! Proceeding to next phase...\n");
+        // shared partial results for aggregation
+        int[] partialCounts = new int[CHUNK_COUNT];
+        AtomicInteger phaseNumber = new AtomicInteger(1);
+
+        // Barrier action runs once, by the last thread to arrive
+        CyclicBarrier barrier = new CyclicBarrier(CHUNK_COUNT, () -> {
+            int total = 0;
+            for (int c : partialCounts) total += c;
+            System.out.printf("  >>> BARRIER — Phase %d complete.  Aggregated count: %,d%n%n",
+                    phaseNumber.getAndIncrement(), total);
         });
 
-        Thread[] threads = new Thread[partySize];
-        for (int i = 0; i < partySize; i++) {
-            final int threadId = i + 1;
-            threads[i] = new Thread(() -> {
+        Thread[] workers = new Thread[CHUNK_COUNT];
+        for (int i = 0; i < CHUNK_COUNT; i++) {
+            final int chunkId = i;
+            final int startRecord = chunkId * CHUNK_SIZE + 1;
+            final int endRecord = startRecord + CHUNK_SIZE - 1;
+
+            workers[i] = new Thread(() -> {
                 try {
-                    // Phase 1
-                    System.out.println("Thread " + threadId + " doing Phase 1...");
-                    Thread.sleep(threadId * 300);
-                    System.out.println("Thread " + threadId + " waiting at barrier (Phase 1 done)");
-                    barrier.await();  // Wait for all
+                    // ── Phase 1: Filter records ──
+                    System.out.printf("  Chunk-%d  Phase 1 — filtering records %,d … %,d%n",
+                            chunkId, startRecord, endRecord);
+                    Thread.sleep(200 + ThreadLocalRandom.current().nextInt(600));
+                    int filtered = CHUNK_SIZE / 2 + ThreadLocalRandom.current().nextInt(1000);
+                    partialCounts[chunkId] = filtered;
+                    System.out.printf("  Chunk-%d  Phase 1 done — %,d records passed filter%n",
+                            chunkId, filtered);
+                    barrier.await();  // wait for all chunks → aggregation runs
 
-                    // Phase 2
-                    System.out.println("Thread " + threadId + " doing Phase 2...");
-                    Thread.sleep(threadId * 200);
-                    System.out.println("Thread " + threadId + " waiting at barrier (Phase 2 done)");
-                    barrier.await();  // Barrier is reusable!
-
-                    System.out.println("Thread " + threadId + " completed all phases!");
+                    // ── Phase 2: Transform records ──
+                    System.out.printf("  Chunk-%d  Phase 2 — transforming %,d records%n",
+                            chunkId, partialCounts[chunkId]);
+                    Thread.sleep(150 + ThreadLocalRandom.current().nextInt(400));
+                    int transformed = partialCounts[chunkId] - ThreadLocalRandom.current().nextInt(500);
+                    partialCounts[chunkId] = transformed;
+                    System.out.printf("  Chunk-%d  Phase 2 done — %,d records transformed%n",
+                            chunkId, transformed);
+                    barrier.await();  // barrier is reusable!
 
                 } catch (Exception e) {
                     Thread.currentThread().interrupt();
                 }
-            }, "Thread-" + threadId);
-            threads[i].start();
+            }, "Chunk-" + chunkId);
+            workers[i].start();
         }
 
-        for (Thread t : threads) t.join();
-        System.out.println("\nAll threads finished!\n");
+        for (Thread w : workers) w.join();
+        System.out.println("✔ All chunks processed across both phases.\n");
     }
 }
