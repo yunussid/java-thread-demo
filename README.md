@@ -378,12 +378,312 @@ lock.unlock();        // count = 0 (fully released, other threads can enter)
 
 **Demos inside the class:**
 
-| Method | What it shows |
-|--------|--------------|
-| `basicLockDemo()` | Two threads safely incrementing a shared counter to exactly 2000 |
-| `tryLockDemo()` | One thread holds the lock for 2 seconds. Another calls `tryLock()` -- gets `false` immediately instead of blocking |
-| `timedLockDemo()` | Thread tries `tryLock(2, SECONDS)` while another holds it for 3 seconds. Times out after 2s |
-| `conditionDemo()` | `Condition` variables (`await`/`signal`) replace `wait`/`notify` in a bounded buffer. Multiple conditions on one lock |
+#### Demo 1: `basicLockDemo()` -- Safe Shared Counter
+
+Two threads each increment a shared `counter` 1000 times. Without the lock, the result would be less than 2000 (race condition). With the lock, it is always exactly 2000.
+
+```java
+public void increment() {
+    lock.lock();
+    try {
+        counter++;          // only one thread at a time
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+#### Demo 2: `tryLockDemo()` -- Non-Blocking Lock Attempt
+
+**The problem with `lock.lock()`:** If the lock is held by another thread, your thread blocks forever. Sometimes you want to say "try once, and if you cannot get it, do something else."
+
+**The code:**
+
+```java
+Thread holder = new Thread(() -> {
+    lock.lock();
+    try {
+        System.out.println("Thread holding lock for 2 seconds...");
+        Thread.sleep(2000);       // holds lock for 2 full seconds
+    } finally {
+        lock.unlock();
+    }
+}, "Holder");
+
+Thread tryLocker = new Thread(() -> {
+    Thread.sleep(500);            // wait 500ms so Holder grabs the lock first
+
+    if (lock.tryLock()) {         // try ONCE, do NOT block
+        try {
+            System.out.println("tryLock succeeded!");
+        } finally {
+            lock.unlock();
+        }
+    } else {
+        System.out.println("tryLock failed - lock not available");
+    }
+}, "TryLocker");
+```
+
+**What happens step by step:**
+
+```
+Time 0ms:     Holder starts, calls lock.lock() -- acquires the lock
+Time 0ms:     Holder prints "holding lock for 2 seconds..." and sleeps
+
+Time 500ms:   TryLocker wakes up, calls lock.tryLock()
+              Lock is held by Holder -- tryLock() returns FALSE immediately
+              TryLocker prints "tryLock failed - lock not available"
+              TryLocker does NOT block -- it just moves on
+
+Time 2000ms:  Holder wakes up, calls lock.unlock()
+              (But TryLocker is already done -- it did not wait)
+```
+
+**Output:**
+```
+Thread holding lock for 2 seconds...
+tryLock failed - lock not available
+```
+
+**Key insight:** `tryLock()` returns `false` immediately. `lock.lock()` would have blocked TryLocker for 1.5 seconds. This is useful when you have a fallback (e.g., return a cached value instead of waiting for the database).
+
+#### Demo 3: `timedLockDemo()` -- Wait Up To a Timeout
+
+**The problem:** `tryLock()` gives up instantly. Sometimes you want to wait for a little while, but not forever.
+
+**The code:**
+
+```java
+Thread holder = new Thread(() -> {
+    lock.lock();
+    try {
+        System.out.println("Holder: Got lock, holding for 3 seconds...");
+        Thread.sleep(3000);       // holds lock for 3 seconds
+    } finally {
+        lock.unlock();
+        System.out.println("Holder: Released lock");
+    }
+});
+
+Thread waiter = new Thread(() -> {
+    Thread.sleep(500);            // let Holder grab the lock first
+
+    System.out.println("Waiter: Trying to acquire lock with 2 second timeout...");
+
+    if (lock.tryLock(2, TimeUnit.SECONDS)) {    // wait UP TO 2 seconds
+        try {
+            System.out.println("Waiter: Got the lock!");
+        } finally {
+            lock.unlock();
+        }
+    } else {
+        System.out.println("Waiter: Timeout! Could not get lock in 2 seconds.");
+    }
+});
+```
+
+**What happens step by step:**
+
+```
+Time 0ms:     Holder starts, acquires lock, sleeps for 3 seconds
+
+Time 500ms:   Waiter wakes up, calls tryLock(2, SECONDS)
+              Lock is held by Holder
+              Waiter starts WAITING (up to 2 seconds)
+
+Time 2500ms:  2 seconds have passed. Holder still has the lock (it sleeps for 3 seconds)
+              tryLock(2, SECONDS) returns FALSE -- TIMEOUT!
+              Waiter prints "Timeout! Could not get lock in 2 seconds."
+
+Time 3000ms:  Holder finally wakes up and calls unlock()
+              (But Waiter already gave up 500ms ago)
+```
+
+**Output:**
+```
+Holder: Got lock, holding for 3 seconds...
+Waiter: Trying to acquire lock with 2 second timeout...
+Waiter: Timeout! Could not get lock in 2 seconds.
+Holder: Released lock
+```
+
+**Key insight:** The timeline is critical. Holder holds for 3 seconds. Waiter starts waiting at 500ms with a 2-second timeout. 500ms + 2000ms = 2500ms. Holder does not release until 3000ms. So Waiter times out 500ms before the lock becomes available.
+
+**Comparison:**
+
+| Method | Behavior when lock is not available |
+|--------|-------------------------------------|
+| `lock.lock()` | Blocks forever until the lock is free |
+| `lock.tryLock()` | Returns `false` immediately |
+| `lock.tryLock(2, SECONDS)` | Waits up to 2 seconds, then returns `false` |
+
+#### Demo 4: `conditionDemo()` -- Replacing wait/notify with Condition Variables
+
+**The problem with `wait()`/`notify()`:**
+
+With `synchronized` + `wait()`/`notify()`, you have ONE waiting queue per object. All waiters -- producers and consumers -- go into the same queue. When you call `notifyAll()`, ALL of them wake up, even though only producers or only consumers should be woken.
+
+**The solution: `Condition` variables**
+
+With `ReentrantLock`, you can create MULTIPLE conditions on the same lock. Producers wait on `notFull`. Consumers wait on `notEmpty`. You can wake them up independently.
+
+**The BoundedBuffer class (inner class in ReentrantLockDemo):**
+
+```java
+static class BoundedBuffer {
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition notFull = lock.newCondition();    // producers wait here
+    private final Condition notEmpty = lock.newCondition();   // consumers wait here
+
+    private final int[] items;
+    private int count = 0;
+    private int putIndex = 0;      // where to put the next item (circular)
+    private int takeIndex = 0;     // where to take the next item (circular)
+
+    public BoundedBuffer(int capacity) {
+        items = new int[capacity];
+    }
+}
+```
+
+**The `put()` method -- called by the producer:**
+
+```java
+public void put(int item) throws InterruptedException {
+    lock.lock();
+    try {
+        while (count == items.length) {
+            System.out.println("Buffer full, producer waiting...");
+            notFull.await();      // "I am a producer. Buffer is full. I will sleep on notFull."
+        }                         // When woken, re-check (while loop) -- maybe another producer filled it again
+
+        items[putIndex] = item;
+        putIndex = (putIndex + 1) % items.length;    // circular: 0, 1, 2, 0, 1, 2, ...
+        count++;
+
+        notEmpty.signal();        // "I added an item. Wake up ONE consumer waiting on notEmpty."
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+**The `take()` method -- called by the consumer:**
+
+```java
+public int take() throws InterruptedException {
+    lock.lock();
+    try {
+        while (count == 0) {
+            System.out.println("Buffer empty, consumer waiting...");
+            notEmpty.await();     // "I am a consumer. Buffer is empty. I will sleep on notEmpty."
+        }
+
+        int item = items[takeIndex];
+        takeIndex = (takeIndex + 1) % items.length;
+        count--;
+
+        notFull.signal();         // "I removed an item. Wake up ONE producer waiting on notFull."
+        return item;
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+**The demo runs a producer and consumer:**
+
+```java
+BoundedBuffer buffer = new BoundedBuffer(3);   // capacity = 3
+
+// Producer thread: puts items 1, 2, 3, 4, 5
+Thread producer = new Thread(() -> {
+    for (int i = 1; i <= 5; i++) {
+        buffer.put(i);
+        System.out.println("Produced: " + i);
+    }
+});
+
+// Consumer thread: takes 5 items
+Thread consumer = new Thread(() -> {
+    for (int i = 1; i <= 5; i++) {
+        int item = buffer.take();
+        System.out.println("Consumed: " + item);
+    }
+});
+```
+
+**What happens step by step (buffer capacity = 3):**
+
+```
+Time  Action                          Buffer State        count
+----  ------                          ------------        -----
+ 1    Producer puts 1                 [1, _, _]           1
+ 2    Producer puts 2                 [1, 2, _]           2
+ 3    Producer puts 3                 [1, 2, 3]           3
+ 4    Producer tries to put 4
+      count == 3 == capacity!
+      Producer calls notFull.await()
+      Producer RELEASES lock and SLEEPS on notFull
+                                                          
+ 5    Consumer takes 1                [_, 2, 3]           2
+      Consumer calls notFull.signal()
+      Producer WAKES UP                                   
+                                                          
+ 6    Producer re-acquires lock
+      count is 2, not full anymore
+      Producer puts 4                 [4, 2, 3]           3
+      (circular: putIndex wrapped to 0)
+      
+ 7    Producer tries to put 5
+      count == 3 == capacity again!
+      Producer sleeps on notFull again
+      
+ 8    Consumer takes 2                [4, _, 3]           2
+      Signals notFull -> producer wakes up
+      
+ 9    Producer puts 5                 [4, 5, 3]           3
+      Producer is DONE (produced all 5)
+      
+10    Consumer takes 3, 4, 5          [_, _, _]           0
+      Consumer is DONE (consumed all 5)
+```
+
+**Why TWO Conditions instead of ONE?**
+
+| | `synchronized` + `wait()/notifyAll()` | `ReentrantLock` + 2 Conditions |
+|-|---------------------------------------|-------------------------------|
+| Wait queues | ONE shared queue | TWO separate queues |
+| `notifyAll()` wakes | ALL waiters (producers AND consumers) | Only the right group |
+| Efficiency | Wastes CPU waking threads that cannot proceed | Precise -- only wakes the thread that can do work |
+| Code clarity | Confusing -- who is waiting for what? | Clear -- producers wait on `notFull`, consumers on `notEmpty` |
+
+**The circular buffer explained:**
+
+```
+putIndex and takeIndex wrap around using modulo:
+  (index + 1) % capacity
+
+For capacity = 3:
+  0 -> 1 -> 2 -> 0 -> 1 -> 2 -> 0 -> ...
+
+This means the array is reused forever without shifting elements.
+
+Visual (capacity = 3):
+
+  After put(1), put(2), put(3):     putIndex=0 (wrapped), takeIndex=0
+    [1] [2] [3]
+     ^takeIndex    ^putIndex(wrapped to 0)
+
+  After take() returns 1:           putIndex=0, takeIndex=1
+    [_] [2] [3]
+         ^takeIndex
+
+  After put(4):                     putIndex=1, takeIndex=1
+    [4] [2] [3]
+     ^putIndex  ^takeIndex
+```
 
 ---
 
