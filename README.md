@@ -1462,50 +1462,306 @@ try {
 
 **File:** `src/main/java/com/threadsdemo/advanced/SynchronizationUtilitiesDemo.java`
 
-These two are the most confused classes in the entire Java concurrency API. Here is the difference:
+These two are the most confused classes in the entire Java concurrency API. You are right that both "wait for things to complete." But the **pattern** they solve is fundamentally different. Let me show you.
+
+#### The Real Difference (Not Just "Reusable vs One-Shot")
+
+The reusable thing is a side-effect. The **core** difference is:
+
+**CountDownLatch: "I (one thread) am waiting for YOU ALL (many threads) to finish something."**
+**CyclicBarrier: "WE ALL wait for EACH OTHER. Nobody moves until everyone arrives."**
+
+```
+CountDownLatch -- ONE waits for MANY:
+
+  Main Thread:  "I am not starting until all 5 subsystems are ready"
+                          |
+                          | await()  (MAIN is the waiter)
+                          |
+                          v
+  Subsystem-1: countDown()  ─┐
+  Subsystem-2: countDown()  ─┤
+  Subsystem-3: countDown()  ─┼──> count reaches 0 ──> Main thread unblocks
+  Subsystem-4: countDown()  ─┤
+  Subsystem-5: countDown()  ─┘
+
+  Workers call countDown() and LEAVE. They do NOT wait.
+  Only the main thread waits.
+
+
+CyclicBarrier -- ALL wait for ALL:
+
+  Worker-1:  "I finished my chunk. I will WAIT here for everyone else."
+  Worker-2:  "I finished my chunk. I will WAIT here too."
+  Worker-3:  "I finished my chunk. I will WAIT here too."
+  Worker-4:  "I finished my chunk. I am the last one."
+                          |
+                          v
+             ALL 4 unblock at the same time.
+             Barrier resets. They can do it again for Phase 2.
+
+  Every thread calls await() and WAITS.
+  Nobody moves until ALL arrive.
+```
+
+#### The Restaurant Analogy
+
+**CountDownLatch = Ordering food at a restaurant:**
+- YOU (the customer) place 5 orders and wait.
+- The kitchen prepares each dish independently. Each dish says "done" (`countDown()`).
+- YOU wait until all 5 are done (`await()`).
+- The cooks do NOT wait for each other. Dish 1 can finish and move on to the next order. Only YOU are waiting.
+- Once all 5 are done, you eat. You cannot "re-order" -- the latch is used up.
+
+**CyclicBarrier = A relay race with 4 runners:**
+- All 4 runners are running Phase 1 independently.
+- When Runner-1 finishes Phase 1, they WAIT at the handoff point.
+- When Runner-2 finishes Phase 1, they ALSO WAIT.
+- When Runner-3 finishes, they ALSO WAIT.
+- When Runner-4 (the last one) arrives, ALL 4 move to Phase 2 simultaneously.
+- This repeats for Phase 2, Phase 3, etc. (the barrier is reusable).
+
+---
+
+#### `CountDownLatch` -- The Code, Line by Line
+
+**Method:** `countDownLatchDemo()` in `SynchronizationUtilitiesDemo.java`
+
+```java
+String[] subsystems = {"Database", "Kafka", "Redis-Cache", "Config-Server", "HealthCheck"};
+CountDownLatch readyLatch = new CountDownLatch(subsystems.length);  // count = 5
+```
+
+A latch with count = 5. It will unblock when `countDown()` has been called 5 times.
+
+```java
+for (String subsystem : subsystems) {
+    new Thread(() -> {
+        int bootTimeMs = 300 + ThreadLocalRandom.current().nextInt(1200);
+        System.out.printf("  [%s] booting ... (%d ms)%n", subsystem, bootTimeMs);
+        Thread.sleep(bootTimeMs);          // simulate slow startup
+
+        readyLatch.countDown();            // "I am ready!" (count: 5 -> 4 -> 3 ...)
+        System.out.printf("  [%s] READY  (remaining: %d)%n",
+                subsystem, readyLatch.getCount());
+
+        // NOTE: This thread does NOT wait. It calls countDown() and is DONE.
+        // It can go do other things. It is not stuck.
+
+    }, subsystem).start();
+}
+```
+
+Each subsystem thread boots (random time), calls `countDown()`, and **leaves**. It does NOT call `await()`. It does NOT wait for anyone.
+
+```java
+System.out.println("  Main thread waiting for all subsystems ...");
+readyLatch.await();  // ONLY the main thread waits here
+// This line blocks until count reaches 0 (all 5 called countDown)
+
+System.out.println("  ALL SUBSYSTEMS READY — accepting traffic!");
+```
+
+**Only the main thread calls `await()`.** The 5 subsystem threads never wait. They fire-and-forget.
+
+**Step-by-step timeline:**
+
+```
+Time    Main Thread              Database    Kafka     Redis     Config    Health    count
+----    -----------              --------    -----     -----     ------    ------    -----
+0ms     await() -- BLOCKED       booting     booting   booting   booting   booting   5
+
+307ms                                        READY                                   4
+                                             countDown()
+                                             (Kafka is DONE. Goes away.)
+
+550ms                                                            READY              3
+                                                                 countDown()
+                                                                 (Config is DONE.)
+
+946ms                                                                      READY    2
+                                                                           countDown()
+
+1033ms                                                 READY                         1
+                                                       countDown()
+
+1050ms                            READY                                              0
+                                  countDown()
+
+1050ms  UNBLOCKED!                                                                   0
+        "ALL READY!"
+        (Main thread
+         continues)
+```
+
+**Notice:**
+- Kafka finished at 307ms and **left**. It did not wait for Database.
+- Database was the slowest (1050ms). When it called `countDown()`, count hit 0.
+- Main thread unblocked at 1050ms.
+- The subsystem threads are INDEPENDENT. They do not know about each other.
+
+**Can you reuse the latch?** NO. Once count = 0, calling `await()` again returns immediately. Calling `countDown()` again has no effect. It is done forever.
+
+---
+
+#### `CyclicBarrier` -- The Code, Line by Line
+
+**Method:** `cyclicBarrierDemo()` in `SynchronizationUtilitiesDemo.java`
+
+```java
+final int CHUNK_COUNT = 4;
+int[] partialCounts = new int[CHUNK_COUNT];  // shared results
+AtomicInteger phaseNumber = new AtomicInteger(1);
+
+CyclicBarrier barrier = new CyclicBarrier(CHUNK_COUNT, () -> {
+    // This lambda runs ONCE when all 4 threads arrive at the barrier.
+    // It runs on the LAST thread to arrive.
+    int total = 0;
+    for (int c : partialCounts) total += c;
+    System.out.printf("  BARRIER -- Phase %d complete.  Aggregated: %,d%n",
+            phaseNumber.getAndIncrement(), total);
+});
+```
+
+A barrier with 4 parties. When all 4 call `await()`, the barrier action runs and all 4 unblock.
+
+```java
+for (int i = 0; i < CHUNK_COUNT; i++) {
+    final int chunkId = i;
+
+    workers[i] = new Thread(() -> {
+        // ── Phase 1: Filter ──
+        System.out.printf("  Chunk-%d  Phase 1 -- filtering%n", chunkId);
+        Thread.sleep(200 + random);    // simulate work
+        partialCounts[chunkId] = filtered;
+        System.out.printf("  Chunk-%d  Phase 1 done%n", chunkId);
+
+        barrier.await();   // "I am done with Phase 1. I will WAIT for everyone else."
+                           // This thread is STUCK HERE until all 4 call await().
+
+        // ── Phase 2: Transform ──
+        // This line does NOT run until ALL 4 threads have called await() above.
+        System.out.printf("  Chunk-%d  Phase 2 -- transforming%n", chunkId);
+        Thread.sleep(150 + random);
+        partialCounts[chunkId] = transformed;
+
+        barrier.await();   // Wait for everyone AGAIN. Barrier resets automatically!
+
+    }, "Chunk-" + chunkId);
+    workers[i].start();
+}
+```
+
+**Every thread calls `await()` and WAITS.** Nobody moves to Phase 2 until all 4 are done with Phase 1.
+
+**Step-by-step timeline:**
+
+```
+Time    Chunk-0         Chunk-1         Chunk-2         Chunk-3         Barrier
+----    -------         -------         -------         -------         -------
+0ms     Phase 1 start   Phase 1 start   Phase 1 start   Phase 1 start   waiting for 4
+
+350ms   Phase 1 done                                                     
+        await()                                                          arrived: 1/4
+        STUCK HERE                                                       
+
+500ms                   Phase 1 done                                     
+                        await()                                          arrived: 2/4
+                        STUCK HERE                                       
+
+600ms                                   Phase 1 done                     
+                                        await()                          arrived: 3/4
+                                        STUCK HERE                       
+
+750ms                                                   Phase 1 done     
+                                                        await()          arrived: 4/4
+                                                                         ALL ARRIVED!
+
+750ms   ─── BARRIER ACTION RUNS: "Phase 1 complete. Aggregated: 501,284" ───
+        ─── BARRIER RESETS (back to 0/4) ───
+        ─── ALL 4 THREADS UNBLOCK SIMULTANEOUSLY ───
+
+750ms   Phase 2 start   Phase 2 start   Phase 2 start   Phase 2 start   waiting for 4
+
+900ms   Phase 2 done
+        await()                                                          arrived: 1/4
+        STUCK HERE
+
+1000ms                  Phase 2 done
+                        await()                                          arrived: 2/4
+
+1050ms                                  Phase 2 done
+                                        await()                          arrived: 3/4
+
+1100ms                                                  Phase 2 done
+                                                        await()          arrived: 4/4
+
+1100ms  ─── BARRIER ACTION RUNS: "Phase 2 complete. Aggregated: 499,102" ───
+        ─── ALL 4 UNBLOCK ───
+        ─── DONE ───
+```
+
+**Notice:**
+- Chunk-0 finished Phase 1 at 350ms but it was **STUCK** until 750ms (waiting for Chunk-3).
+- That is 400ms of waiting. In CountDownLatch, Chunk-0 would have moved on immediately.
+- ALL 4 threads start Phase 2 at the exact same time (750ms).
+- The barrier reset and worked again for Phase 2 without creating a new object.
+
+---
+
+#### Side-by-Side: The Same Scenario, Two Different Tools
+
+Imagine 4 workers processing data. Here is how each tool would behave:
+
+**With CountDownLatch:**
+```
+Worker-1: does Phase 1 ... countDown() ... immediately starts Phase 2
+Worker-2: does Phase 1 ... countDown() ... immediately starts Phase 2
+Worker-3: does Phase 1 ... countDown() ... immediately starts Phase 2
+Worker-4: does Phase 1 ... countDown() ... immediately starts Phase 2
+
+PROBLEM: Worker-1 might start Phase 2 while Worker-4 is still in Phase 1.
+         Phase 2 might read Phase 1 results that are not ready yet.
+         DATA CORRUPTION.
+```
+
+**With CyclicBarrier:**
+```
+Worker-1: does Phase 1 ... await() ... WAITS ...
+Worker-2: does Phase 1 ... await() ... WAITS ...
+Worker-3: does Phase 1 ... await() ... WAITS ...
+Worker-4: does Phase 1 ... await() ... ALL UNBLOCK -> Phase 2 starts
+
+SAFE: Nobody starts Phase 2 until ALL Phase 1 work is guaranteed complete.
+```
+
+---
+
+#### The Complete Comparison
 
 | | `CountDownLatch` | `CyclicBarrier` |
 |-|-----------------|-----------------|
-| Reusable? | **No** -- one-shot | **Yes** -- resets automatically |
-| Who waits? | One or more threads call `await()` | All participating threads call `await()` |
-| Who counts? | Workers call `countDown()` | The barrier counts arrivals automatically |
-| Use case | "Wait until N events happen" | "All N threads must reach this point before anyone proceeds" |
+| **Core pattern** | ONE waits for MANY | ALL wait for ALL |
+| **Who calls `await()`?** | Only the waiter (e.g., main thread) | **Every** participating thread |
+| **Who calls `countDown()`?** | The workers | Nobody -- `await()` auto-counts |
+| **Do workers wait?** | **NO** -- they countDown and leave | **YES** -- they await and BLOCK |
+| **Reusable?** | No -- once count=0, it is dead | Yes -- resets automatically |
+| **Barrier action?** | No | Yes -- a Runnable that runs when all arrive |
+| **Number of threads** | Waiters and counters can be different | All parties must call `await()` |
+| **Use case** | "Start after prerequisites are done" | "Sync threads between phases" |
+| **Real-world** | App startup (wait for DB, Kafka, Cache) | Parallel processing (Phase 1 -> aggregate -> Phase 2) |
 
-#### `CountDownLatch` -- The One-Time Gate
+#### When You CANNOT Swap Them
 
-**Method:** `countDownLatchDemo()`
+**Use CountDownLatch when:**
+- The "event sources" are not threads you control (e.g., async callbacks, external systems)
+- The waiting thread is different from the counting threads
+- You need exactly-once triggering (initialize something once)
 
-**Use case:** Main thread waits for 5 subsystems (Database, Kafka, Redis, Config, HealthCheck) to finish booting before accepting traffic.
-
-```java
-CountDownLatch readyLatch = new CountDownLatch(5);
-
-// Each subsystem thread, when done booting:
-readyLatch.countDown();       // "I am ready" (count: 5 -> 4 -> 3 -> ... -> 0)
-
-// Main thread:
-readyLatch.await();           // blocks until count reaches 0
-acceptTraffic();
-```
-
-#### `CyclicBarrier` -- The Reusable Meeting Point
-
-**Method:** `cyclicBarrierDemo()`
-
-**Use case:** Process 1,000,000 records in 4 chunks. All 4 threads must finish Phase 1 before any can start Phase 2.
-
-```java
-CyclicBarrier barrier = new CyclicBarrier(4, () -> {
-    aggregateResults();       // runs once when all 4 arrive
-});
-
-// Each worker:
-processChunk();
-barrier.await();              // wait for all 4 -> aggregation runs -> barrier RESETS
-
-transformChunk();
-barrier.await();              // works again for Phase 2!
-```
+**Use CyclicBarrier when:**
+- The SAME threads need to synchronize at multiple points
+- You have multi-phase processing (filter -> aggregate -> transform -> aggregate)
+- Threads must NOT proceed until all are at the same point
 
 ---
 
