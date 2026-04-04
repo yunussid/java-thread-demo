@@ -1,77 +1,144 @@
-# ☕ Java Threading & Concurrency — Complete Guide
+# Java Threading & Concurrency -- The Complete Guide
 
-A **hands-on**, runnable reference for every major Java concurrency concept — from basic `Thread` creation all the way to `Phaser`, `Exchanger`, `ThreadLocal`, and Java 21+ Virtual Threads.
+A hands-on, runnable reference for every major Java concurrency concept. Each class has a `main()` method -- run it and see the output.
 
-Every section below contains:
-1. **What it is** — plain-English explanation.
-2. **When to use it** — real-world scenario.
-3. **How it works** — the key API calls, with a code snippet.
-4. **▶ Run it** — the exact class you can execute.
+> **Never written Java?** That is fine. This README explains every concept from scratch before showing the code.
 
 ---
 
-## 📁 Project Structure
+## Before You Start -- What is a Thread?
+
+### The Problem: One Thing at a Time
+
+By default, a Java program runs on a **single thread** -- it does one thing at a time, top to bottom:
+
+```
+fetch user from database     (500ms -- program is STUCK waiting)
+fetch orders from database   (300ms -- can not start until user fetch is done)
+fetch recommendations        (200ms -- waits for orders to finish)
+
+Total: 1000ms
+```
+
+### The Solution: Threads
+
+A **thread** is an independent path of execution inside your program. With multiple threads, you can do multiple things at the same time:
+
+```
+Thread 1: fetch user from database       (500ms)
+Thread 2: fetch orders from database     (300ms)  -- starts at the SAME TIME
+Thread 3: fetch recommendations          (200ms)  -- starts at the SAME TIME
+
+Total: 500ms (the slowest one)
+```
+
+### The Danger: Shared Data
+
+When two threads access the **same variable** at the same time, things break:
+
+```
+Thread A reads counter = 10
+Thread B reads counter = 10       (at the same time!)
+Thread A writes counter = 11
+Thread B writes counter = 11      (should be 12, but B still thinks it was 10)
+
+Result: counter = 11 (WRONG -- should be 12)
+```
+
+This is called a **race condition**. The entire `java.util.concurrent` package exists to solve this problem. That is what this project teaches.
+
+### Key Vocabulary
+
+| Term | Meaning |
+|------|---------|
+| **Thread** | An independent path of execution inside your program |
+| **Main Thread** | The thread that runs your `main()` method. Every Java program starts with one |
+| **Multithreading** | Running multiple threads at the same time |
+| **Concurrency** | Designing your program to handle multiple tasks that may overlap in time |
+| **Parallelism** | Actually running tasks at the exact same instant (requires multiple CPU cores) |
+| **Race Condition** | A bug where the result depends on which thread runs first |
+| **Deadlock** | Two threads waiting for each other forever -- both stuck |
+| **Thread Safety** | Code that works correctly even when called from multiple threads simultaneously |
+| **Synchronization** | Controlling the order in which threads access shared data |
+| **Critical Section** | A block of code that must not be executed by two threads at the same time |
+| **Lock** | A mechanism to ensure only one thread enters a critical section |
+| **Atomic** | An operation that completes in one step -- no other thread can see it half-done |
+
+---
+
+## Project Structure -- Read the Code in This Order
 
 ```
 java-thread-demo/
-├── pom.xml
-├── README.md
-└── src/main/java/com/threadsdemo/
-    ├── JavaThreadDemoApplication.java          ← Project entry-point / index
-    │
-    ├── multithreading/                         ← Thread basics
-    │   ├── Thread1.java                        ← Creating threads by extending Thread
-    │   ├── Thread2.java                        ← Creating threads by implementing Runnable
-    │   ├── Stack.java                          ← Synchronized stack (shared resource)
-    │   └── BlockingQueue.java                  ← Hand-rolled blocking queue (wait/notify)
-    │
-    └── advanced/                               ← Advanced concurrency
-        ├── ReentrantLockDemo.java              ← Lock, tryLock, timed lock, Conditions
-        ├── ReadWriteLockDemo.java              ← Shared reads, exclusive writes (Cache)
-        ├── AtomicDemo.java                     ← CAS, AtomicInteger, LongAdder
-        ├── ExecutorServiceDemo.java            ← Thread pools & Future
-        ├── CompletableFutureDemo.java          ← Async chaining, combining, error handling
-        ├── SynchronizationUtilitiesDemo.java   ← Semaphore, CountDownLatch, CyclicBarrier
-        ├── BlockingQueueDemo.java              ← Producer-Consumer with LinkedBlockingQueue
-        ├── PhaserExchangerDemo.java            ← Phaser (dynamic barrier) & Exchanger (buffer swap)
-        ├── ThreadLocalDemo.java                ← Context isolation & data-leak prevention
-        └── VirtualThreadsDemo.java             ← Java 21+ lightweight threads
+  |
+  +-- pom.xml                                        (Maven config, Java 21+)
+  |
+  +-- src/main/java/com/threadsdemo/
+        |
+        |-- JavaThreadDemoApplication.java            (entry point -- lists all demos)
+        |
+        |-- multithreading/                           PART 1: Thread Basics
+        |     |-- Thread1.java                         (1) Creating a thread by extending Thread
+        |     |-- Thread2.java                         (2) Creating a thread by implementing Runnable
+        |     |-- Stack.java                           (3) synchronized keyword -- protecting shared data
+        |     +-- BlockingQueue.java                   (4) wait()/notify() -- thread communication
+        |
+        +-- advanced/                                 PART 2-6: Advanced Concurrency
+              |-- ReentrantLockDemo.java               (5) Flexible locks: tryLock, timed, Conditions
+              |-- ReadWriteLockDemo.java               (6) Multiple readers, one writer (Cache)
+              |-- AtomicDemo.java                      (7) Lock-free: CAS, AtomicInteger, LongAdder
+              |-- ExecutorServiceDemo.java             (8) Thread pools: Fixed, Cached, Scheduled
+              |-- CompletableFutureDemo.java           (9) Async pipelines: thenApply, allOf, exceptionally
+              |-- SynchronizationUtilitiesDemo.java   (10) Semaphore, CountDownLatch, CyclicBarrier
+              |-- BlockingQueueDemo.java              (11) Producer-Consumer with LinkedBlockingQueue
+              |-- PhaserExchangerDemo.java            (12) Phaser (dynamic barrier) & Exchanger (swap)
+              |-- ThreadLocalDemo.java                (13) Per-thread context & data-leak prevention
+              +-- VirtualThreadsDemo.java             (14) Java 21+ lightweight threads
 ```
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ```bash
-# Clone & build
-git clone <repo-url>
+# Prerequisites: Java 21+, Maven
+
+git clone https://github.com/yunussid/java-thread-demo.git
 cd java-thread-demo
 mvn compile
 
-# Run any demo (replace the class name)
-java --enable-preview -cp target/classes com.threadsdemo.advanced.SynchronizationUtilitiesDemo
+# Run any demo:
+java --enable-preview -cp target/classes com.threadsdemo.advanced.AtomicDemo
 ```
-
-> **Java 21+** is required. The project uses `--enable-preview` for latest language features.
 
 ---
 
-## 🧵 Part 1 — Thread Basics
+## Part 1 -- Thread Basics (multithreading/)
 
-### 1.1 Creating Threads by Extending `Thread`
+### What is a Thread in Java?
 
-**▶ Class:** `multithreading/Thread1.java`
+Every Java program starts with one thread -- the **main thread** that runs `main()`. To do multiple things at once, you create additional threads.
 
-The simplest way to create a thread. Extend `Thread` and override `run()`.
+Java gives you two ways to create a thread. Both do the same thing -- the difference is style.
+
+---
+
+### 1.1 Creating a Thread by Extending `Thread`
+
+**File:** `src/main/java/com/threadsdemo/multithreading/Thread1.java`
+
+**What this class does:** Extends the `Thread` class and overrides `run()` with the code you want to execute on a separate thread.
 
 ```java
 public class Thread1 extends Thread {
+
     public Thread1(String threadName) {
-        super(threadName);
+        super(threadName);    // give the thread a name for debugging
     }
 
     @Override
     public void run() {
+        // This code runs on a NEW thread, not the main thread
         for (int i = 0; i < 5; i++) {
             System.out.println("Thread " + Thread.currentThread().getName() + " -> i=" + i);
         }
@@ -79,24 +146,34 @@ public class Thread1 extends Thread {
 }
 ```
 
-**How to use it:**
+**How you use it:**
 ```java
-Thread1 t = new Thread1("Worker");
-t.start();  // start(), not run()!
+Thread1 t = new Thread1("Worker-A");
+t.start();   // creates a new OS thread and calls run() on it
 ```
 
-> ⚠️ Calling `run()` directly executes on the *current* thread. Always use `start()`.
+**CRITICAL:** You must call `start()`, not `run()`.
+
+| Call | What happens |
+|------|-------------|
+| `t.start()` | Creates a NEW thread, runs `run()` on it in parallel |
+| `t.run()` | Runs `run()` on the CURRENT thread -- no multithreading at all |
+
+**Downside:** Java only allows extending one class. If your class already extends something else, you cannot extend `Thread`.
 
 ---
 
-### 1.2 Creating Threads by Implementing `Runnable`
+### 1.2 Creating a Thread by Implementing `Runnable`
 
-**▶ Class:** `multithreading/Thread2.java`
+**File:** `src/main/java/com/threadsdemo/multithreading/Thread2.java`
 
-Preferred approach — keeps your class free to extend something else.
+**What this class does:** Implements the `Runnable` interface instead of extending `Thread`. This is the **preferred approach** because:
+- Your class is free to extend another class
+- It separates "the task" (Runnable) from "the thread" (Thread)
 
 ```java
 public class Thread2 implements Runnable {
+
     @Override
     public void run() {
         for (int i = 0; i < 5; i++) {
@@ -106,113 +183,224 @@ public class Thread2 implements Runnable {
 }
 ```
 
-**How to use it:**
+**How you use it:**
 ```java
-Thread t = new Thread(new Thread2(), "MyRunnable");
+Thread t = new Thread(new Thread2(), "Worker-B");
 t.start();
 ```
 
+**Which should you use?**
+
+| | `extends Thread` | `implements Runnable` |
+|-|-------------------|----------------------|
+| Can extend another class? | No | Yes |
+| Separation of concerns? | No (task + thread are mixed) | Yes (task is separate) |
+| Can reuse with ExecutorService? | No | Yes |
+| Recommended? | For quick demos only | **Yes -- use this in real code** |
+
 ---
 
-### 1.3 Synchronized Shared Resource — `Stack`
+### 1.3 The `synchronized` Keyword -- Protecting Shared Data
 
-**▶ Class:** `multithreading/Stack.java`
+**File:** `src/main/java/com/threadsdemo/multithreading/Stack.java`
 
-A shared `Stack` used by multiple threads. The `push()` and `pop()` methods are `synchronized` to prevent race conditions.
+**The problem this solves:**
+
+When two threads access the same `Stack` at the same time, things can go wrong:
+
+```
+Thread A:  reads top = 2
+Thread B:  reads top = 2         (at the same time!)
+Thread A:  sets top = 3, writes value to array[3]
+Thread B:  sets top = 3, writes value to array[3]   (OVERWRITES Thread A's value!)
+
+Result: One value is silently lost. The stack is corrupted.
+```
+
+**The solution: `synchronized`**
+
+Adding `synchronized` to a method means: **only one thread can execute this method at a time.** All other threads wait in line.
 
 ```java
 public synchronized boolean push(int element) {
     if (isFull()) return false;
     ++top;
-    Thread.sleep(1000);   // simulate slow work
+    try { Thread.sleep(1000); } catch (Exception e) {}   // simulate slow work
     array[top] = element;
     return true;
 }
+
+public synchronized int pop() {
+    if (isEmpty()) return Integer.MIN_VALUE;
+    int obj = array[top];
+    array[top] = Integer.MIN_VALUE;
+    try { Thread.sleep(1000); } catch (Exception e) {}
+    --top;
+    return obj;
+}
 ```
 
-**Key insight:** Without `synchronized`, two threads could both see `top=2`, both increment to `3`, and one value would overwrite the other.
+**How synchronized works internally:**
+
+Every Java object has an invisible **monitor lock** (also called intrinsic lock). When a thread enters a `synchronized` method:
+
+```
+Thread A enters push()
+  |
+  +-> Acquires the lock on "this" Stack object
+  |
+  +-> Executes the method body
+  |
+  +-> Releases the lock when the method returns
+
+Thread B tries to enter push() or pop()
+  |
+  +-> Sees the lock is held by Thread A
+  |
+  +-> WAITS (blocked) until Thread A releases it
+```
+
+**Key insight:** `synchronized` locks the **object**, not the method. If `push()` and `pop()` are both `synchronized` on the same object, calling `push()` also blocks `pop()` and vice versa.
 
 ---
 
-### 1.4 Hand-Rolled `BlockingQueue` (wait / notify)
+### 1.4 `wait()` and `notify()` -- Thread Communication
 
-**▶ Class:** `multithreading/BlockingQueue.java`
+**File:** `src/main/java/com/threadsdemo/multithreading/BlockingQueue.java`
 
-A custom bounded queue built with `synchronized`, `wait()`, and `notifyAll()` — the classic low-level producer-consumer mechanism.
+**The problem:** `synchronized` prevents two threads from corrupting data, but what if one thread needs to **wait for a condition** that another thread will make true?
+
+Example: A consumer thread wants to remove an item, but the queue is empty. It should wait for a producer to add something.
+
+**The solution: `wait()` and `notifyAll()`**
 
 ```java
 public boolean add(int item) {
     synchronized (q) {
         while (q.size() == capacity) {
-            q.wait();           // block producer until space is available
+            q.wait();        // "I cannot proceed. I will SLEEP and release the lock."
         }
         q.add(item);
-        q.notifyAll();          // wake up consumers
+        q.notifyAll();       // "I changed something. WAKE UP everyone who is waiting."
         return true;
+    }
+}
+
+public int remove() {
+    synchronized (q) {
+        while (q.isEmpty()) {
+            q.wait();        // "Queue is empty. I will sleep until someone adds something."
+        }
+        int item = q.poll();
+        q.notifyAll();       // "I removed an item. Wake up producers who were waiting for space."
+        return item;
     }
 }
 ```
 
-| Method | Behaviour |
-|--------|-----------|
-| `add(item)` | Blocks if queue is full |
-| `remove()` | Blocks if queue is empty |
+**Step by step:**
 
-> This is the **educational version**. For production code, use `java.util.concurrent.LinkedBlockingQueue` (see Part 4).
+```
+1. Consumer calls remove()
+2. Queue is empty -> consumer calls q.wait()
+3. Consumer RELEASES the lock and goes to sleep
+4. Producer enters add(), acquires the lock
+5. Producer adds an item and calls q.notifyAll()
+6. Consumer wakes up, re-acquires the lock
+7. Consumer checks while loop again -- queue is not empty now
+8. Consumer removes the item and returns
+```
 
----
+**Why `while` and not `if`?**
 
-## 🔒 Part 2 — Locks & Synchronization
-
-### 2.1 `ReentrantLock` — Flexible Locking
-
-**▶ Class:** `advanced/ReentrantLockDemo.java`
-
-`ReentrantLock` gives you everything `synchronized` does, plus:
-
-| Feature | `synchronized` | `ReentrantLock` |
-|---------|---------------|-----------------|
-| Try without blocking | ❌ | `tryLock()` |
-| Timed wait | ❌ | `tryLock(2, SECONDS)` |
-| Interruptible wait | ❌ | `lockInterruptibly()` |
-| Fair ordering (FIFO) | ❌ | `new ReentrantLock(true)` |
-| Multiple conditions | ❌ | `lock.newCondition()` |
-
-**Pattern — always unlock in `finally`:**
 ```java
-lock.lock();
-try {
-    // critical section
-} finally {
-    lock.unlock();  // ALWAYS release in finally!
+while (q.isEmpty()) {   // CORRECT -- re-check after waking up
+    q.wait();
+}
+
+if (q.isEmpty()) {      // WRONG -- another thread may have consumed the item
+    q.wait();           // between your wake-up and your re-acquisition of the lock
 }
 ```
 
-**Demos inside the class:**
+This is called a **spurious wakeup** -- the thread can wake up even without `notify()` being called. The `while` loop handles this safely.
 
-| Demo | What it shows |
-|------|--------------|
-| `basicLockDemo()` | Two threads safely incrementing a shared counter |
-| `tryLockDemo()` | Non-blocking lock attempt — returns `false` instead of blocking |
-| `timedLockDemo()` | Wait up to 2 seconds for the lock, then give up |
-| `conditionDemo()` | `Condition` variables (`await`/`signal`) replacing `wait`/`notify` in a bounded buffer |
+> This is the **educational** low-level approach. In production, use `java.util.concurrent.LinkedBlockingQueue` which handles all of this for you (see Part 4).
 
 ---
 
-### 2.2 `ReadWriteLock` — Shared Reads, Exclusive Writes
+## Part 2 -- Locks & Synchronization (advanced/)
 
-**▶ Class:** `advanced/ReadWriteLockDemo.java`
+### 2.1 `ReentrantLock` -- Flexible Locking
 
-When reads vastly outnumber writes, a single mutex is wasteful — you are blocking readers from each other for no reason.
+**File:** `src/main/java/com/threadsdemo/advanced/ReentrantLockDemo.java`
 
-`ReadWriteLock` allows:
-- **Multiple readers simultaneously** (read lock is shared).
-- **Only one writer at a time** (write lock is exclusive, blocks readers too).
+**Why not just use `synchronized`?**
 
-**Real-world analogy:** A cache. 100 threads reading the cache should not block each other. Only when an entry is updated should everyone wait.
+`synchronized` is simple but limited. It blocks forever -- you cannot say "try for 2 seconds, then give up." `ReentrantLock` adds features:
+
+| Feature | `synchronized` | `ReentrantLock` |
+|---------|---------------|-----------------|
+| Try without blocking | No | `tryLock()` returns false immediately |
+| Timed wait | No | `tryLock(2, SECONDS)` waits up to 2s |
+| Interruptible wait | No | `lockInterruptibly()` can be interrupted |
+| Fair ordering (FIFO) | No | `new ReentrantLock(true)` |
+| Multiple conditions | No | `lock.newCondition()` |
+
+**The pattern -- ALWAYS unlock in `finally`:**
 
 ```java
-// READING — many threads can do this at once
+ReentrantLock lock = new ReentrantLock();
+
+lock.lock();          // acquire
+try {
+    // critical section (only one thread at a time)
+    counter++;
+} finally {
+    lock.unlock();    // ALWAYS release in finally -- even if an exception is thrown
+}
+```
+
+If you forget `unlock()`, other threads will wait **forever**. That is a deadlock.
+
+**What "Reentrant" means:**
+
+The same thread can acquire the lock **multiple times** without deadlocking itself:
+
+```java
+lock.lock();          // count = 1
+lock.lock();          // count = 2 (same thread, no deadlock)
+lock.unlock();        // count = 1
+lock.unlock();        // count = 0 (fully released, other threads can enter)
+```
+
+`synchronized` also has this property -- a thread can enter two `synchronized` methods on the same object without deadlocking.
+
+**Demos inside the class:**
+
+| Method | What it shows |
+|--------|--------------|
+| `basicLockDemo()` | Two threads safely incrementing a shared counter to exactly 2000 |
+| `tryLockDemo()` | One thread holds the lock for 2 seconds. Another calls `tryLock()` -- gets `false` immediately instead of blocking |
+| `timedLockDemo()` | Thread tries `tryLock(2, SECONDS)` while another holds it for 3 seconds. Times out after 2s |
+| `conditionDemo()` | `Condition` variables (`await`/`signal`) replace `wait`/`notify` in a bounded buffer. Multiple conditions on one lock |
+
+---
+
+### 2.2 `ReadWriteLock` -- Many Readers, One Writer
+
+**File:** `src/main/java/com/threadsdemo/advanced/ReadWriteLockDemo.java`
+
+**The problem:** A cache is read by 100 threads but written by 1 thread. With `synchronized`, all 100 readers block each other even though reading is safe.
+
+**The solution:** `ReadWriteLock` allows:
+- **Multiple readers at the same time** (read lock is shared)
+- **Only one writer at a time** (write lock is exclusive -- blocks readers too)
+
+```java
+ReadWriteLock rwLock = new ReentrantReadWriteLock();
+
+// READING -- many threads can do this at once
 rwLock.readLock().lock();
 try {
     return cache.get(key);
@@ -220,7 +408,7 @@ try {
     rwLock.readLock().unlock();
 }
 
-// WRITING — exclusive access
+// WRITING -- exclusive access, blocks all readers and other writers
 rwLock.writeLock().lock();
 try {
     cache.put(key, value);
@@ -229,459 +417,380 @@ try {
 }
 ```
 
-The demo implements a full `Cache` class with `get()`, `put()`, `remove()`, `getAll()`, and `clear()` methods backed by `ReentrantReadWriteLock`.
+The demo implements a full thread-safe `Cache` class with `get()`, `put()`, `remove()`, `getAll()`, and `clear()`.
 
 ---
 
-### 2.3 Atomic Classes — Lock-Free Thread Safety
+### 2.3 Atomic Classes -- Lock-Free Thread Safety
 
-**▶ Class:** `advanced/AtomicDemo.java`
+**File:** `src/main/java/com/threadsdemo/advanced/AtomicDemo.java`
 
-Atomic classes use **CAS (Compare-And-Swap)** at the hardware level — no locks needed.
+**The problem:** Locks work but they are slow -- threads wait in line. For simple counters, there is a faster way.
 
-| Class | Use |
-|-------|-----|
-| `AtomicInteger` / `AtomicLong` | Thread-safe counters |
-| `AtomicReference<V>` | Thread-safe object reference swaps |
-| `LongAdder` | High-contention counter (faster than AtomicLong) |
+**The solution:** Atomic classes use **CAS (Compare-And-Swap)** -- a single CPU instruction that atomically reads, compares, and writes. No lock needed.
 
-**CAS in action:**
+**How CAS works:**
+
+```
+Thread A: "If counter is currently 10, change it to 11"
+
+CPU checks:
+  - Is counter == 10? YES -> writes 11. Done.
+  - Is counter == 10? NO (someone changed it) -> FAILS. Thread A retries.
+```
+
+No thread ever blocks. If there is a conflict, the thread simply retries. This is called **lock-free** programming.
+
+| Class | What it does |
+|-------|-------------|
+| `AtomicInteger` | Thread-safe `int`. `incrementAndGet()`, `compareAndSet()` |
+| `AtomicLong` | Thread-safe `long` |
+| `AtomicReference<V>` | Thread-safe object reference swap |
+| `LongAdder` | Like `AtomicLong` but much faster under high contention (uses internal striping) |
+
 ```java
-// "If the value is currently 100, change it to 200"
-boolean success = value.compareAndSet(100, 200);
-// Returns true if swap happened, false if someone else changed it first
+AtomicInteger counter = new AtomicInteger(0);
+
+// Thread-safe increment -- no lock needed
+counter.incrementAndGet();   // returns new value
+
+// CAS -- "If currently 100, change to 200"
+boolean success = counter.compareAndSet(100, 200);
 ```
 
 **Demos inside the class:**
 
-| Demo | What it shows |
-|------|--------------|
-| `atomicIntegerDemo()` | 10 threads x 1000 increments = exactly 10,000 (no race) |
-| `atomicReferenceDemo()` | CAS on a `User` object — only one thread update wins |
-| `compareAndSetDemo()` | Raw CAS, `updateAndGet()`, `accumulateAndGet()` |
-| `longAdderDemo()` | Benchmark: `LongAdder` vs `AtomicLong` under 10-thread contention |
+| Method | What it shows |
+|--------|--------------|
+| `atomicIntegerDemo()` | 10 threads x 1000 increments = exactly 10,000 (no race condition) |
+| `atomicReferenceDemo()` | CAS on a `User` object -- only one thread's update wins |
+| `compareAndSetDemo()` | Raw CAS, `updateAndGet(v -> v * 2)`, `accumulateAndGet(50, Integer::sum)` |
+| `longAdderDemo()` | Benchmark: `LongAdder` vs `AtomicLong` with 10 threads x 1,000,000 increments. LongAdder is significantly faster |
 
 ---
 
-## ⚙️ Part 3 — Executors & Thread Pools
+## Part 3 -- Executors & Thread Pools (advanced/)
 
-### 3.1 `ExecutorService` — Thread Pool Management
+### 3.1 `ExecutorService` -- Reusing Threads
 
-**▶ Class:** `advanced/ExecutorServiceDemo.java`
+**File:** `src/main/java/com/threadsdemo/advanced/ExecutorServiceDemo.java`
 
-Creating a new `Thread` per task is expensive. Executors manage a **pool of reusable threads**.
+**The problem:** Creating a new `Thread` for every task is expensive. Each thread uses ~1MB of memory and takes time to create/destroy.
 
-| Pool Type | When To Use |
+**The solution:** A **thread pool** creates N threads once and reuses them for thousands of tasks:
+
+```
+Without pool:  Task 1 -> create Thread -> run -> destroy Thread
+               Task 2 -> create Thread -> run -> destroy Thread
+               Task 3 -> create Thread -> run -> destroy Thread
+               (3 threads created and destroyed)
+
+With pool:     Pool has 2 threads ready
+               Task 1 -> Thread-1 runs it
+               Task 2 -> Thread-2 runs it
+               Task 3 -> Thread-1 finishes Task 1, picks up Task 3
+               (2 threads reused for 3 tasks)
+```
+
+| Pool Type | When to Use |
 |-----------|-------------|
-| `newFixedThreadPool(N)` | Known, steady workload — N threads always alive |
-| `newCachedThreadPool()` | Many short-lived tasks — threads are created on demand, cached 60s |
-| `newSingleThreadExecutor()` | Guaranteed sequential execution (one thread) |
-| `newScheduledThreadPool(N)` | Delayed or periodic tasks (cron-like) |
-| `ThreadPoolExecutor(...)` | Full control over core size, max size, queue, rejection policy |
+| `newFixedThreadPool(N)` | You know the workload. N threads always alive |
+| `newCachedThreadPool()` | Many short tasks. Threads created on demand, reused for 60s |
+| `newSingleThreadExecutor()` | Guaranteed sequential execution. One thread |
+| `newScheduledThreadPool(N)` | Delayed or periodic tasks (like cron) |
+| `ThreadPoolExecutor(...)` | Full control: core size, max size, queue, rejection policy |
 
 **Proper shutdown:**
 ```java
-executor.shutdown();                             // no new tasks accepted
-executor.awaitTermination(5, TimeUnit.SECONDS);  // wait for running tasks
+executor.shutdown();                             // stop accepting new tasks
+executor.awaitTermination(5, TimeUnit.SECONDS);  // wait for running tasks to finish
 ```
 
 **Demos inside the class:**
 
-| Demo | What it shows |
-|------|--------------|
-| `fixedThreadPoolDemo()` | 6 tasks on 3 threads — tasks queue up |
-| `cachedThreadPoolDemo()` | 5 tasks — pool creates threads on demand |
-| `singleThreadExecutorDemo()` | 3 tasks always run on the same thread |
-| `scheduledThreadPoolDemo()` | One-shot delay + periodic task every 500ms |
-| `futureDemo()` | `submit(Callable)` then `Future.get()` to retrieve a result |
-| `invokeAllDemo()` | Submit a list of `Callable`s, wait for all results |
-| `customThreadPoolDemo()` | `ThreadPoolExecutor` with custom core/max/queue/rejection policy |
+| Method | What it shows |
+|--------|--------------|
+| `fixedThreadPoolDemo()` | 6 tasks on 3 threads -- tasks 4, 5, 6 wait in a queue |
+| `cachedThreadPoolDemo()` | 5 tasks -- pool creates 5 threads on demand |
+| `singleThreadExecutorDemo()` | 3 tasks always run on the same thread, in order |
+| `scheduledThreadPoolDemo()` | One-shot 1s delay + periodic task every 500ms |
+| `futureDemo()` | `submit(Callable)` returns `Future`. Call `.get()` to block and get the result |
+| `invokeAllDemo()` | Submit 5 `Callable`s, wait for all results at once |
+| `customThreadPoolDemo()` | `ThreadPoolExecutor` with core=2, max=4, bounded queue=10, `CallerRunsPolicy` |
 
 ---
 
-### 3.2 `CompletableFuture` — Async Pipeline
+### 3.2 `CompletableFuture` -- Async Pipelines
 
-**▶ Class:** `advanced/CompletableFutureDemo.java`
+**File:** `src/main/java/com/threadsdemo/advanced/CompletableFutureDemo.java`
 
-`CompletableFuture` is Java's answer to JavaScript Promises — non-blocking, composable async pipelines.
+**The problem with `Future.get()`:** It blocks your thread. You are back to sequential execution.
 
-**Mental model — a pipeline of stages:**
+**The solution:** `CompletableFuture` lets you chain async operations without blocking:
 
-```
-supplyAsync("hello")
-  -> thenApply(toUpperCase)     // "HELLO"
-  -> thenApply(+ " WORLD")     // "HELLO WORLD"
-  -> thenAccept(print)         // side-effect
-```
-
-| Operation | Analogy | Purpose |
-|-----------|---------|---------|
-| `thenApply(fn)` | `map` | Transform the result |
-| `thenCompose(fn)` | `flatMap` | Chain another async call |
-| `thenCombine(other, fn)` | `zip` | Combine two independent futures |
-| `allOf(f1, f2, f3)` | `Promise.all` | Wait for ALL to complete |
-| `anyOf(f1, f2, f3)` | `Promise.race` | Complete when ANY finishes |
-| `exceptionally(fn)` | `catch` | Fallback on error |
-| `handle(fn)` | `then+catch` | Handle both success and failure |
-
-**Real-world example in the demo — Parallel API calls:**
 ```java
-CompletableFuture<String> user   = CompletableFuture.supplyAsync(() -> fetchUser());
-CompletableFuture<String> orders = CompletableFuture.supplyAsync(() -> fetchOrders());
-CompletableFuture<String> recs   = CompletableFuture.supplyAsync(() -> fetchRecs());
+CompletableFuture
+    .supplyAsync(() -> fetchUser())           // runs on background thread
+    .thenApply(user -> user.toUpperCase())    // transform result (still async)
+    .thenAccept(name -> log.info(name))       // consume result (still async)
+    .exceptionally(ex -> fallback());          // handle errors
+```
 
-// All 3 calls run in parallel — total time is about max(200, 300, 250) = ~300ms
+**Mental model -- think of it as a pipeline:**
+
+```
+supplyAsync("hello")              -- start with a value (async)
+  |
+  +-> thenApply(toUpperCase)      -- transform: "HELLO"
+  |
+  +-> thenApply(+ " WORLD")      -- transform: "HELLO WORLD"
+  |
+  +-> thenAccept(print)           -- side-effect: prints "HELLO WORLD"
+```
+
+| Operation | What it does | Analogy |
+|-----------|-------------|---------|
+| `supplyAsync(fn)` | Start async task that returns a value | Start the pipeline |
+| `thenApply(fn)` | Transform the result | `map` in streams |
+| `thenCompose(fn)` | Chain another async call | `flatMap` in streams |
+| `thenCombine(other, fn)` | Combine two independent futures | `zip` |
+| `allOf(f1, f2, f3)` | Wait for ALL to complete | `Promise.all` in JavaScript |
+| `anyOf(f1, f2, f3)` | Complete when ANY finishes | `Promise.race` in JavaScript |
+| `exceptionally(fn)` | Handle error with fallback | `catch` |
+| `handle(fn)` | Handle both success and error | `then + catch` |
+
+**Real-world example -- Parallel API calls:**
+
+```java
+CompletableFuture<String> user   = CompletableFuture.supplyAsync(() -> fetchUser());     // 200ms
+CompletableFuture<String> orders = CompletableFuture.supplyAsync(() -> fetchOrders());   // 300ms
+CompletableFuture<String> recs   = CompletableFuture.supplyAsync(() -> fetchRecs());     // 250ms
+
+// All 3 run in PARALLEL. Total time = max(200, 300, 250) = ~300ms, not 750ms
 CompletableFuture.allOf(user, orders, recs)
     .thenApply(v -> buildDashboard(user.join(), orders.join(), recs.join()));
 ```
 
 ---
 
-## 🚦 Part 4 — Synchronization Utilities
+## Part 4 -- Synchronization Utilities (advanced/)
 
-### 4.1 `Semaphore` — The Traffic Controller
+### 4.1 `Semaphore` -- Limit Concurrent Access
 
-**▶ Class:** `advanced/SynchronizationUtilitiesDemo.java` -> `semaphoreDemo()`
+**File:** `src/main/java/com/threadsdemo/advanced/SynchronizationUtilitiesDemo.java` -> `semaphoreDemo()`
 
-A `Semaphore` maintains a set of **permits**. A thread must `acquire()` a permit before proceeding and `release()` it when done.
+**What it is:** A counter of "permits." A thread must `acquire()` a permit to proceed. If none are available, it blocks. When done, it `release()`s the permit.
 
-**Use Case:** Your microservice talks to a legacy database that can only handle **3 concurrent connections**. A `Semaphore(3)` prevents the system from overwhelming the database.
+**Real-world use case:** Your microservice talks to a database that can handle only 3 connections. A `Semaphore(3)` ensures no more than 3 threads use the database at once.
 
 ```java
-Semaphore connectionPool = new Semaphore(3, true);  // 3 permits, fair ordering
+Semaphore connectionPool = new Semaphore(3, true);   // 3 permits, fair (FIFO)
 
-// In each service thread:
-connectionPool.acquire();    // blocks until a permit is available
+connectionPool.acquire();    // blocks if all 3 permits are taken
 try {
-    // use the database connection
-    executeQuery();
+    queryDatabase();
 } finally {
     connectionPool.release();  // return the permit
 }
 ```
 
-**Key distinction:** Unlike a lock, a Semaphore has **no owner**. Any thread can release a permit, even if it did not acquire it. This makes it a *counting* mechanism, not a *mutual exclusion* mechanism.
+**Key difference from locks:** A Semaphore has **no owner**. Any thread can release a permit, even if it did not acquire it. A lock can only be released by the thread that acquired it.
 
-**How the demo works:**
-```
-8 service threads compete for 3 permits
-
-  Service-1  -> requesting connection
-  Service-1  CONNECTED  (available: 2)
-  Service-2  CONNECTED  (available: 1)
-  Service-3  CONNECTED  (available: 0)
-  Service-4  -> waiting (no permits left)
-  Service-1  <- releases -> Service-4 gets in
-```
+| Semaphore(1) | Lock |
+|-------------|------|
+| Acts like a lock (1 permit = 1 thread) | Also 1 thread at a time |
+| Any thread can release | Only the owner can unlock |
+| No reentrancy | ReentrantLock supports reentrancy |
 
 ---
 
-### 4.2 `CountDownLatch` vs `CyclicBarrier` — The Sync Points
+### 4.2 `CountDownLatch` vs `CyclicBarrier`
 
-These are often confused. Here is the key difference:
+**File:** `src/main/java/com/threadsdemo/advanced/SynchronizationUtilitiesDemo.java`
+
+These two are the most confused classes in the entire Java concurrency API. Here is the difference:
 
 | | `CountDownLatch` | `CyclicBarrier` |
 |-|-----------------|-----------------|
-| **Reusable?** | No, one-shot | Yes, resets automatically |
-| **Who waits?** | One or more threads call `await()` | All participating threads call `await()` |
-| **Who counts?** | Worker threads call `countDown()` | The barrier itself counts arrivals |
-| **Use case** | Wait until N events happen | All N threads must reach this point |
+| Reusable? | **No** -- one-shot | **Yes** -- resets automatically |
+| Who waits? | One or more threads call `await()` | All participating threads call `await()` |
+| Who counts? | Workers call `countDown()` | The barrier counts arrivals automatically |
+| Use case | "Wait until N events happen" | "All N threads must reach this point before anyone proceeds" |
 
-#### 4.2a `CountDownLatch` — The One-Time Gate
+#### `CountDownLatch` -- The One-Time Gate
 
-**▶ Class:** `advanced/SynchronizationUtilitiesDemo.java` -> `countDownLatchDemo()`
+**Method:** `countDownLatchDemo()`
 
-**Use Case:** Initializing a complex service. The main thread waits for 5 background subsystems (**Database**, **Kafka**, **Redis**, **Config**, **HealthCheck**) to report "Ready" before it starts accepting traffic.
+**Use case:** Main thread waits for 5 subsystems (Database, Kafka, Redis, Config, HealthCheck) to finish booting before accepting traffic.
 
 ```java
 CountDownLatch readyLatch = new CountDownLatch(5);
 
-// Each subsystem thread, when ready:
-readyLatch.countDown();      // decrement count
+// Each subsystem thread, when done booting:
+readyLatch.countDown();       // "I am ready" (count: 5 -> 4 -> 3 -> ... -> 0)
 
 // Main thread:
-readyLatch.await();          // blocks until count == 0
-startAcceptingTraffic();
+readyLatch.await();           // blocks until count reaches 0
+acceptTraffic();
 ```
 
-**How the demo works:**
-```
-  [Database]      booting (1050 ms)
-  [Kafka]         booting (307 ms)
-  [Redis-Cache]   booting (1033 ms)
-  [Config-Server] booting (550 ms)
-  [HealthCheck]   booting (946 ms)
+#### `CyclicBarrier` -- The Reusable Meeting Point
 
-  Main thread waiting...
+**Method:** `cyclicBarrierDemo()`
 
-  [Kafka]         READY  (remaining: 4)
-  [Config-Server] READY  (remaining: 3)
-  ...
-  [Database]      READY  (remaining: 0)
-
-  ALL SUBSYSTEMS READY — accepting traffic!
-```
-
-#### 4.2b `CyclicBarrier` — The Reusable Meeting Point
-
-**▶ Class:** `advanced/SynchronizationUtilitiesDemo.java` -> `cyclicBarrierDemo()`
-
-**Use Case:** Processing **1,000,000 records** in 4 chunks (250k each). Worker threads process independently but **wait at the barrier** to aggregate results before moving to the next phase.
+**Use case:** Process 1,000,000 records in 4 chunks. All 4 threads must finish Phase 1 before any can start Phase 2.
 
 ```java
 CyclicBarrier barrier = new CyclicBarrier(4, () -> {
-    // This runs once when all 4 threads arrive
-    aggregatePartialResults();
+    aggregateResults();       // runs once when all 4 arrive
 });
 
-// In each worker thread:
-processChunk();        // Phase 1 work
-barrier.await();       // wait for all 4 -> aggregation runs
+// Each worker:
+processChunk();
+barrier.await();              // wait for all 4 -> aggregation runs -> barrier RESETS
 
-transformChunk();      // Phase 2 work
-barrier.await();       // barrier resets and works again!
-```
-
-**How the demo works:**
-```
-  Chunk-0  Phase 1 — filtering records 1 to 250,000
-  Chunk-1  Phase 1 — filtering records 250,001 to 500,000
-  Chunk-2  Phase 1 — filtering records 500,001 to 750,000
-  Chunk-3  Phase 1 — filtering records 750,001 to 1,000,000
-
-  BARRIER — Phase 1 complete. Aggregated count: 501,284
-
-  Chunk-0  Phase 2 — transforming records
-  ...
-  BARRIER — Phase 2 complete. Aggregated count: 499,102
+transformChunk();
+barrier.await();              // works again for Phase 2!
 ```
 
 ---
 
-### 4.3 `BlockingQueue` — The Producer-Consumer Backbone
+### 4.3 `BlockingQueue` -- Producer-Consumer
 
-**▶ Class:** `advanced/BlockingQueueDemo.java`
+**File:** `src/main/java/com/threadsdemo/advanced/BlockingQueueDemo.java`
 
-This is the **most critical utility for decoupled systems**. `BlockingQueue` is a thread-safe queue that:
-- **Blocks the producer** if the queue is full (back-pressure).
-- **Blocks the consumer** if the queue is empty (no busy-waiting).
-
-**Use Case:** High-throughput order processing. Your API puts `Order` objects into a `LinkedBlockingQueue` during traffic spikes. A separate pool of worker threads consumes them at their own pace. This is essential for maintaining high **TPS** (Transactions Per Second).
+**What it is:** A thread-safe queue that blocks the producer if full and blocks the consumer if empty. No `synchronized`, `wait()`, or `notify()` needed -- it handles everything internally.
 
 ```java
-BlockingQueue<Order> queue = new LinkedBlockingQueue<>(5);  // bounded, capacity 5
+BlockingQueue<Order> queue = new LinkedBlockingQueue<>(5);   // bounded, max 5 items
 
-// Producer thread:
-queue.put(order);   // BLOCKS if queue is full (back-pressure!)
+// Producer:
+queue.put(order);     // BLOCKS if queue has 5 items (back-pressure)
 
-// Consumer thread:
-Order o = queue.take();   // BLOCKS if queue is empty
-processOrder(o);
+// Consumer:
+Order o = queue.take();   // BLOCKS if queue is empty (no busy-waiting)
 ```
 
-**Graceful shutdown with Poison Pill pattern:**
+**Graceful shutdown with Poison Pill:**
+
 ```java
 Order POISON_PILL = new Order(-1, "SHUTDOWN");
 
-// After producers finish:
-for (int i = 0; i < consumerCount; i++) {
-    queue.put(POISON_PILL);  // one per consumer
-}
+// After all producers finish:
+for (int i = 0; i < consumerCount; i++)
+    queue.put(POISON_PILL);
 
 // In consumer loop:
 Order order = queue.take();
-if (order == POISON_PILL) break;  // clean exit
-```
-
-**How the demo works:**
-```
-Queue capacity : 5  |  Producers: 2  |  Consumers: 3
-
-  [Producer-1]  putting Order{id=100, item=Laptop}
-  [Consumer-1]  processing Order{id=100, item=Laptop}
-  ...
-  All producers finished. Sending poison pills...
-  [Consumer-2]  received shutdown signal
-  [Consumer-1]  received shutdown signal
-  [Consumer-3]  received shutdown signal
-
-All orders processed. Queue is empty: true
+if (order == POISON_PILL) break;
 ```
 
 ---
 
-### 4.4 `Phaser` — Dynamic Multi-Phase Synchronization
+### 4.4 `Phaser` -- Dynamic Multi-Phase Barrier
 
-**▶ Class:** `advanced/PhaserExchangerDemo.java` -> `phaserDemo()`
+**File:** `src/main/java/com/threadsdemo/advanced/PhaserExchangerDemo.java` -> `phaserDemo()`
 
-`Phaser` is a **more flexible, reusable** version of both `CountDownLatch` and `CyclicBarrier`. Its killer feature: the number of participating threads (parties) can **change at runtime**.
+**What it is:** Like `CyclicBarrier`, but the number of participating threads can **change at runtime**.
 
 | Method | Meaning |
 |--------|---------|
-| `phaser.register()` | Add a new party (thread) |
-| `phaser.arriveAndAwaitAdvance()` | I am done, wait for everyone else |
-| `phaser.arriveAndDeregister()` | I am done and leaving — do not wait for me next phase |
+| `register()` | "I am joining this phase" |
+| `arriveAndAwaitAdvance()` | "I am done, wait for everyone" |
+| `arriveAndDeregister()` | "I am done AND leaving -- do not wait for me next phase" |
 
-**Use Case:** Multi-phase parallel algorithm where the number of workers **fluctuates** based on task complexity in each phase.
-
-```java
-Phaser phaser = new Phaser(1);  // main thread registered
-
-// Dynamically add workers
-phaser.register();
-new Thread(() -> {
-    doPhase0();
-    phaser.arriveAndAwaitAdvance();  // wait for everyone
-
-    if (myWorkIsDone) {
-        phaser.arriveAndDeregister();  // leave — fewer parties next phase
-        return;
-    }
-
-    doPhase1();
-    phaser.arriveAndAwaitAdvance();
-}).start();
-```
-
-**How the demo works:**
-```
-Phase 0 — 4 workers parse data
-  Worker-4 deregisters (data was trivial)
-
-Phase 1 — 3 workers validate
-  Worker-3 deregisters (validation complete)
-
-Phase 2 — 2 workers finalize output
-
-Phaser pipeline finished. isTerminated = true
-```
+**Demo:** 4 workers start in Phase 0. Worker-4 deregisters after Phase 0. Worker-3 deregisters after Phase 1. Only Workers 1 and 2 finish Phase 2.
 
 ---
 
-### 4.5 `Exchanger` — Dual-Buffer Swap
+### 4.5 `Exchanger` -- Two-Thread Swap
 
-**▶ Class:** `advanced/PhaserExchangerDemo.java` -> `exchangerDemo()`
+**File:** `src/main/java/com/threadsdemo/advanced/PhaserExchangerDemo.java` -> `exchangerDemo()`
 
-A synchronization point where exactly **two threads** can **swap objects**.
+**What it is:** A synchronization point where exactly two threads swap objects.
 
-**Use Case — Dual-buffering:**
-- Thread A fills a buffer with data.
-- Thread B processes/empties a buffer.
-- When both are done, they **exchange** buffers and repeat.
-- Result: one buffer is *always* being filled while the other is consumed — continuous throughput.
+**Use case -- Dual buffering:** Thread A fills buffer, Thread B empties buffer. When both are done, they exchange buffers. One buffer is always being filled while the other is consumed.
 
 ```java
 Exchanger<List<String>> exchanger = new Exchanger<>();
 
-// Filler thread:
-buffer.addAll(data);
-buffer = exchanger.exchange(buffer);  // give full buffer, receive empty one
-
-// Drainer thread:
-buffer = exchanger.exchange(buffer);  // give empty buffer, receive full one
-process(buffer);
-buffer.clear();
-```
-
-**How the demo works:**
-```
-  [Filler]   added R1-Item1 to R1-Item4
-  [Filler]   buffer full — exchanging
-  [Drainer]  received full buffer (4 items) — processing
-  [Drainer]  buffer drained
-  [Filler]   received empty buffer (size 0)
-  ... (repeats for 3 rounds)
+// Filler:  buffer = exchanger.exchange(buffer);  // give full, receive empty
+// Drainer: buffer = exchanger.exchange(buffer);  // give empty, receive full
 ```
 
 ---
 
-## 🧠 Part 5 — `ThreadLocal` — Context Isolation
+## Part 5 -- ThreadLocal (advanced/)
 
-**▶ Class:** `advanced/ThreadLocalDemo.java`
+**File:** `src/main/java/com/threadsdemo/advanced/ThreadLocalDemo.java`
 
-`ThreadLocal` provides variables that are **local to a specific thread**. Each thread has its own, independently initialized copy.
+**What it is:** A variable that is **local to each thread**. Each thread has its own copy. No sharing, no race conditions.
 
-**Use Case:** In Spring, `SecurityContextHolder` uses `ThreadLocal` to store the current user authentication details. This allows **any service in that thread execution path** to access the user ID without passing it as a method parameter through every layer.
+**Real-world use case:** In Spring, `SecurityContextHolder` uses `ThreadLocal` to store the logged-in user. Any code in the request chain can call `SecurityContextHolder.getContext()` without the user being passed as a parameter.
 
 ```
 Controller -> Service -> Repository -> AuditLogger
      ^                                    ^
-     +------ ThreadLocal stores userId ---+
+     +---- ThreadLocal stores userId -----+
            (no parameter passing needed)
 ```
 
 ```java
-private static final ThreadLocal<RequestContext> CONTEXT = new ThreadLocal<>();
+private static final ThreadLocal<String> CONTEXT = new ThreadLocal<>();
 
-// At the start of a request:
-CONTEXT.set(new RequestContext("REQ-001", "alice"));
-
-// Anywhere deep in the call stack:
-String userId = CONTEXT.get().userId();  // "alice"
+CONTEXT.set("alice");          // set in this thread only
+CONTEXT.get();                 // "alice" (only in this thread)
+CONTEXT.remove();              // clean up
 ```
 
 ### WARNING: ThreadLocal + Thread Pools = Data Leak
 
-Thread pools (**Tomcat**, **@Async**, **Executors**) **reuse threads**. If you forget to call `ThreadLocal.remove()`, data from one request can **leak into the next request** handled by the same thread.
-
-**The demo proves this:**
+Thread pools **reuse threads**. If you forget `remove()`, the next request handled by the same thread sees the previous user's data:
 
 ```
---- DATA LEAK — Forgetting .remove() ---
-
-  Request-1  set context -> User-Alice
-  Request-2  read context -> User-Alice        <-- BUG! Wrong user!
+Request-1 (Thread-1): CONTEXT.set("alice")  -- forgot remove()!
+Request-2 (Thread-1): CONTEXT.get() -> "alice"    BUG! This is a different user!
 ```
 
-**The fix — ALWAYS call `.remove()` in a `finally` block:**
+**Always call `.remove()` in a `finally` block:**
 
 ```java
 try {
-    CONTEXT.set(new RequestContext("REQ-001", "alice"));
-    // handle the request
+    CONTEXT.set("alice");
+    // handle request
 } finally {
-    CONTEXT.remove();  // ALWAYS clean up
+    CONTEXT.remove();   // ALWAYS clean up
 }
-```
-
-```
---- SAFE USAGE ---
-
-  Request-1  set context -> User-Alice
-  Request-1  removed context in finally block
-  Request-2  read context -> null              <-- Clean!
 ```
 
 **Demos inside the class:**
 
-| Demo | What it shows |
-|------|--------------|
-| `basicIsolationDemo()` | Two threads (alice, bob) with different contexts that never interfere, accessed through Controller to Service to Repository |
-| `dataLeakDemo()` | **Deliberately buggy** — shows how forgetting `.remove()` leaks data across requests in a single-thread pool |
-| `safeUsageDemo()` | Same scenario with proper `finally { remove() }` — no leaked data |
+| Method | What it shows |
+|--------|--------------|
+| `basicIsolationDemo()` | Two threads (alice, bob) with different contexts that never interfere |
+| `dataLeakDemo()` | **Deliberately buggy** -- shows the leak in a single-thread pool |
+| `safeUsageDemo()` | Same scenario with `finally { remove() }` -- no leak |
 
 ---
 
-## 🪶 Part 6 — Virtual Threads (Java 21+)
+## Part 6 -- Virtual Threads (Java 21+)
 
-**▶ Class:** `advanced/VirtualThreadsDemo.java`
+**File:** `src/main/java/com/threadsdemo/advanced/VirtualThreadsDemo.java`
 
-Virtual threads are **lightweight threads managed by the JVM** (not the OS):
+**The problem:** Platform threads (the normal kind) use ~1MB of memory each and are managed by the operating system. You can create maybe a few thousand before running out of memory.
+
+**The solution:** Virtual threads are managed by the **JVM**, use only a few KB, and you can create **millions** of them:
 
 | | Platform Thread | Virtual Thread |
 |-|----------------|----------------|
 | Managed by | OS | JVM |
-| Memory | ~1 MB stack | ~few KB |
+| Memory | ~1 MB | ~few KB |
 | Max practical count | ~thousands | **millions** |
-| Best for | CPU-bound work | **I/O-bound work** |
+| Best for | CPU-bound work | **I/O-bound work** (HTTP calls, DB queries) |
 
-**Creation:**
 ```java
-// Simple
+// Create a virtual thread
 Thread.startVirtualThread(() -> doWork());
-
-// Named
-Thread.ofVirtual().name("my-vt").start(() -> doWork());
 
 // Executor (recommended for production)
 try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -689,78 +798,78 @@ try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 }
 ```
 
-**Demos inside the class:**
-
-| Demo | What it shows |
-|------|--------------|
-| `creationDemo()` | Three ways to create virtual threads + platform thread comparison |
-| `executorDemo()` | `newVirtualThreadPerTaskExecutor()` — one VT per task |
-| `scalabilityDemo()` | 10,000 tasks: virtual threads vs platform thread pool(100) — VTs are ~10x faster |
-| `ioTaskDemo()` | 100 concurrent HTTP requests (500ms each) complete in ~500ms total |
-
-**Best Practices:**
-- Use for I/O-bound operations (HTTP, DB, file I/O)
-- Use `try-with-resources` with executor
-- Do NOT use for CPU-bound operations
-- Do NOT pool virtual threads (they are cheap — just create new ones)
-- Avoid `synchronized` blocks (pins the carrier thread) — use `ReentrantLock` instead
-
 **Migration from platform threads:**
 ```java
 // Before:
-Executors.newFixedThreadPool(N)
+Executors.newFixedThreadPool(100)
 
-// After:
+// After (just change one line):
 Executors.newVirtualThreadPerTaskExecutor()
 ```
 
+**Best Practices:**
+- Use for I/O-bound work (HTTP, DB, file I/O)
+- Do NOT use for CPU-bound work (math, image processing)
+- Do NOT pool virtual threads -- they are cheap, just create new ones
+- Avoid `synchronized` blocks (pins the carrier OS thread) -- use `ReentrantLock` instead
+
+**Demos inside the class:**
+
+| Method | What it shows |
+|--------|--------------|
+| `creationDemo()` | Three ways to create virtual threads + platform thread comparison |
+| `executorDemo()` | `newVirtualThreadPerTaskExecutor()` -- one virtual thread per task |
+| `scalabilityDemo()` | 10,000 tasks: virtual threads vs platform pool(100). Virtual threads ~10x faster |
+| `ioTaskDemo()` | 100 concurrent "HTTP requests" (500ms each) complete in ~500ms total |
+
 ---
 
-## 🗺️ Concept Map — When to Use What
+## Concept Map -- When to Use What
 
 ```
-Need to...                              -> Use this
+I need to...                              -> Use this
 --------------------------------------------------------------
-Limit concurrent access to N resources  -> Semaphore
-Wait for N events to happen (one-time)  -> CountDownLatch
-Sync N threads at a reusable barrier    -> CyclicBarrier
-Dynamic barrier (add/remove threads)    -> Phaser
-Swap data between exactly 2 threads     -> Exchanger
-Decouple producer from consumer         -> BlockingQueue
-Protect a critical section              -> synchronized / ReentrantLock
-Many readers, few writers               -> ReadWriteLock
-Lock-free counters                      -> AtomicInteger / LongAdder
-Async pipelines with chaining           -> CompletableFuture
-Reuse threads across many tasks         -> ExecutorService / ThreadPool
-Per-thread context (e.g., user ID)      -> ThreadLocal
-Massive I/O concurrency (millions)      -> Virtual Threads (Java 21+)
+Run code on a separate thread             -> Thread / Runnable
+Protect shared data (simple)              -> synchronized
+Protect shared data (flexible)            -> ReentrantLock
+Try lock without blocking                 -> ReentrantLock.tryLock()
+Many readers, few writers                 -> ReadWriteLock
+Lock-free counter                         -> AtomicInteger / LongAdder
+Reuse threads for many tasks              -> ExecutorService (thread pool)
+Async pipeline with chaining              -> CompletableFuture
+Limit concurrent access to N              -> Semaphore
+Wait for N events (one-time)              -> CountDownLatch
+Sync N threads at reusable barrier        -> CyclicBarrier
+Dynamic barrier (add/remove threads)      -> Phaser
+Swap data between 2 threads               -> Exchanger
+Decouple producer from consumer           -> BlockingQueue
+Per-thread context (user ID, request ID)  -> ThreadLocal
+Massive I/O concurrency (millions)        -> Virtual Threads (Java 21+)
 ```
 
 ---
 
-## 🧪 Running All Demos
+## Running All Demos
 
-Each class has its own `main()` method. Run any one independently:
+Each class has its own `main()` method. Run any one:
 
 ```bash
-# Build once
 mvn compile
 
-# Then run any demo:
-java --enable-preview -cp target/classes com.threadsdemo.advanced.SynchronizationUtilitiesDemo
-java --enable-preview -cp target/classes com.threadsdemo.advanced.BlockingQueueDemo
-java --enable-preview -cp target/classes com.threadsdemo.advanced.PhaserExchangerDemo
-java --enable-preview -cp target/classes com.threadsdemo.advanced.ThreadLocalDemo
 java --enable-preview -cp target/classes com.threadsdemo.advanced.ReentrantLockDemo
 java --enable-preview -cp target/classes com.threadsdemo.advanced.ReadWriteLockDemo
 java --enable-preview -cp target/classes com.threadsdemo.advanced.AtomicDemo
 java --enable-preview -cp target/classes com.threadsdemo.advanced.ExecutorServiceDemo
 java --enable-preview -cp target/classes com.threadsdemo.advanced.CompletableFutureDemo
+java --enable-preview -cp target/classes com.threadsdemo.advanced.SynchronizationUtilitiesDemo
+java --enable-preview -cp target/classes com.threadsdemo.advanced.BlockingQueueDemo
+java --enable-preview -cp target/classes com.threadsdemo.advanced.PhaserExchangerDemo
+java --enable-preview -cp target/classes com.threadsdemo.advanced.ThreadLocalDemo
 java --enable-preview -cp target/classes com.threadsdemo.advanced.VirtualThreadsDemo
 ```
 
 ---
 
-## 📜 License
+## License
 
 See [LICENSE](LICENSE) file.
