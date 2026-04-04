@@ -691,33 +691,236 @@ Visual (capacity = 3):
 
 **File:** `src/main/java/com/threadsdemo/advanced/ReadWriteLockDemo.java`
 
-**The problem:** A cache is read by 100 threads but written by 1 thread. With `synchronized`, all 100 readers block each other even though reading is safe.
+**The problem with `synchronized` and `ReentrantLock`:** They allow only ONE thread at a time -- period. If 100 threads want to READ a cache, they all block each other, even though reading is safe (nobody is changing the data). You are wasting time making threads wait for no reason.
 
-**The solution:** `ReadWriteLock` allows:
-- **Multiple readers at the same time** (read lock is shared)
-- **Only one writer at a time** (write lock is exclusive -- blocks readers too)
+```
+With synchronized or ReentrantLock:
+
+  Reader-1: lock -> read -> unlock
+  Reader-2:                         lock -> read -> unlock     (waited for Reader-1!)
+  Reader-3:                                                    lock -> read -> unlock
+  
+  Total: 3 x 50ms = 150ms  (all sequential -- SLOW)
+```
+
+**The solution:** `ReadWriteLock` has TWO locks inside it:
+
+| Lock | Who can hold it | Rules |
+|------|----------------|-------|
+| **Read lock** | Multiple threads at the same time | Blocks only if a writer is active |
+| **Write lock** | Only ONE thread at a time | Blocks ALL readers AND all other writers |
+
+```
+With ReadWriteLock:
+
+  Reader-1: readLock -> read -> readUnlock
+  Reader-2: readLock -> read -> readUnlock     (runs at the SAME TIME as Reader-1!)
+  Reader-3: readLock -> read -> readUnlock     (runs at the SAME TIME!)
+  
+  Total: 50ms  (all parallel -- FAST)
+```
+
+#### The Lock Rules
+
+```
+                       Can a NEW reader acquire?    Can a NEW writer acquire?
+                       ─────────────────────────    ─────────────────────────
+Read lock is held      YES (readers share)          NO (writer must wait)
+Write lock is held     NO (reader must wait)        NO (writer must wait)
+No lock is held        YES                          YES
+```
+
+In one sentence: **Readers share. Writers are exclusive.**
+
+#### The `Cache` Class -- Line by Line
+
+The demo builds a thread-safe cache using `ReadWriteLock`. Here is every method explained:
 
 ```java
-ReadWriteLock rwLock = new ReentrantReadWriteLock();
+class Cache {
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final Map<String, Object> cache = new HashMap<>();   // NOT thread-safe on its own!
+```
 
-// READING -- many threads can do this at once
-rwLock.readLock().lock();
-try {
-    return cache.get(key);
-} finally {
-    rwLock.readLock().unlock();
-}
+`HashMap` is not thread-safe. Without the lock, two threads calling `put()` simultaneously could corrupt the internal structure. The `ReadWriteLock` protects it.
 
-// WRITING -- exclusive access, blocks all readers and other writers
-rwLock.writeLock().lock();
-try {
-    cache.put(key, value);
-} finally {
-    rwLock.writeLock().unlock();
+**`get()` -- Read operation (multiple threads can do this at once):**
+
+```java
+public Object get(String key) {
+    rwLock.readLock().lock();          // acquire the READ lock
+    try {
+        Thread.sleep(50);             // simulate slow read (e.g., disk or network)
+        return cache.get(key);
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return null;
+    } finally {
+        rwLock.readLock().unlock();    // ALWAYS release in finally
+    }
 }
 ```
 
-The demo implements a full thread-safe `Cache` class with `get()`, `put()`, `remove()`, `getAll()`, and `clear()`.
+If 3 readers call `get()` at the same time, all 3 acquire the read lock simultaneously -- no blocking. They all complete in ~50ms total (parallel), not 150ms (sequential).
+
+**`put()` -- Write operation (only one thread, blocks everyone):**
+
+```java
+public void put(String key, Object value) {
+    rwLock.writeLock().lock();         // acquire the WRITE lock (exclusive)
+    try {
+        Thread.sleep(200);            // simulate slow write (e.g., database update)
+        cache.put(key, value);
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+    } finally {
+        rwLock.writeLock().unlock();   // release -- readers can proceed now
+    }
+}
+```
+
+When a writer holds the write lock:
+- All readers calling `get()` BLOCK at `readLock().lock()` until the writer releases
+- Other writers calling `put()` BLOCK at `writeLock().lock()` until the writer releases
+
+**`remove()` and `clear()` -- Also write operations:**
+
+```java
+public void remove(String key) {
+    rwLock.writeLock().lock();         // modifies data -> needs write lock
+    try {
+        cache.remove(key);
+    } finally {
+        rwLock.writeLock().unlock();
+    }
+}
+
+public void clear() {
+    rwLock.writeLock().lock();         // modifies data -> needs write lock
+    try {
+        cache.clear();
+    } finally {
+        rwLock.writeLock().unlock();
+    }
+}
+```
+
+Any method that **changes** the cache needs the write lock. Any method that only **reads** needs the read lock.
+
+**`getAll()` -- Read operation that returns a copy:**
+
+```java
+public Map<String, Object> getAll() {
+    rwLock.readLock().lock();          // only reads -> read lock is enough
+    try {
+        return new HashMap<>(cache);   // return a COPY, not the original
+    } finally {
+        rwLock.readLock().unlock();
+    }
+}
+```
+
+Why return a copy? If you returned the original `cache` reference, the caller could modify it outside the lock -- bypassing thread safety. A copy is safe to use without locks.
+
+#### The `main()` Method -- What Happens at Runtime
+
+```java
+Cache cache = new Cache();
+
+// Pre-populate (these run sequentially on the main thread, no concurrency yet)
+cache.put("user:1", "Alice");      // writeLock, 200ms
+cache.put("user:2", "Bob");        // writeLock, 200ms
+cache.put("user:3", "Charlie");    // writeLock, 200ms
+```
+
+Then 4 threads are created:
+
+```java
+// 3 readers -- each reads 5 times with 100ms sleep between reads
+Thread reader1 = new Thread(() -> {
+    for (int i = 0; i < 5; i++) {
+        System.out.println("Reader1: " + cache.get("user:1"));  // readLock, 50ms
+        sleep(100);  // sleep 100ms between reads (NO lock held during sleep)
+    }
+}, "Reader-1");
+// reader2 and reader3 are identical, reading user:2 and user:3
+
+// 1 writer -- waits 200ms, then updates user:1
+Thread writer = new Thread(() -> {
+    sleep(200);  // let readers start first
+    System.out.println("Writer: Updating user:1...");
+    cache.put("user:1", "Alice Updated");  // writeLock, 200ms
+    System.out.println("Writer: Update complete!");
+}, "Writer");
+```
+
+All 4 threads are started and `join()`ed (main thread waits for all to finish).
+
+#### Step-by-Step Timeline
+
+```
+Time     Reader-1              Reader-2              Reader-3              Writer
+────     ────────              ────────              ────────              ──────
+0ms      readLock()            readLock()            readLock()            sleeping(200ms)
+         get("user:1")         get("user:2")         get("user:3")
+         ALL THREE run in PARALLEL (read locks are shared)
+
+50ms     -> "Alice"            -> "Bob"              -> "Charlie"
+         readUnlock()          readUnlock()          readUnlock()
+         sleep(100)            sleep(100)            sleep(100)
+
+150ms    readLock()            readLock()            readLock()
+         get (round 2)         get (round 2)         get (round 2)
+
+200ms    (still reading)       (still reading)       (still reading)       wakes up
+                                                                           writeLock()
+                                                                           BLOCKED!
+                                                                           (readers hold readLock)
+
+200ms    readUnlock()          readUnlock()          readUnlock()
+         sleep(100)            sleep(100)            sleep(100)
+                                                                           
+~200ms                                                                     writeLock acquired!
+                                                                           put("user:1", "Alice Updated")
+                                                                           (takes 200ms)
+
+300ms    readLock()
+         BLOCKED!  (writer holds writeLock)
+         reader2 BLOCKED
+         reader3 BLOCKED
+
+~400ms                                                                     writeUnlock()
+                                                                           Writer done!
+
+~400ms   readLock acquired!    readLock acquired!    readLock acquired!
+         -> "Alice Updated"    -> "Bob"              -> "Charlie"
+         (reader1 now sees the updated value!)
+
+...      rounds 4, 5 continue normally (all parallel reads)
+
+~700ms   ALL DONE
+         Final value: "Alice Updated"
+```
+
+**Key observations from the timeline:**
+
+1. **Readers run in parallel** -- At time 0ms, all three readers hold the read lock simultaneously. This is the whole point of ReadWriteLock.
+
+2. **Writer waits for readers** -- At time 200ms, the writer tries to acquire the write lock but readers still hold read locks. Writer must wait.
+
+3. **Readers wait for writer** -- At time 300ms, readers try to acquire read locks but the writer holds the write lock. Readers must wait.
+
+4. **Reader-1 sees the updated value** -- After the writer finishes, Reader-1's next `get("user:1")` returns `"Alice Updated"` instead of `"Alice"`. The write is visible to all subsequent reads.
+
+#### Why Not Just Use `synchronized`?
+
+| | `synchronized` | `ReentrantLock` | `ReadWriteLock` |
+|-|---------------|-----------------|-----------------|
+| Multiple readers at once? | No | No | **Yes** |
+| Time for 3 parallel reads (50ms each) | 150ms (sequential) | 150ms (sequential) | **50ms (parallel)** |
+| Best for | Simple mutual exclusion | Flexible locking (tryLock, timed) | **Read-heavy workloads** |
+
+If your code has 95% reads and 5% writes (like a cache, config store, or lookup table), `ReadWriteLock` gives you a massive performance boost.
 
 ---
 
