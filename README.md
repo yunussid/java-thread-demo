@@ -1009,17 +1009,368 @@ executor.shutdown();                             // stop accepting new tasks
 executor.awaitTermination(5, TimeUnit.SECONDS);  // wait for running tasks to finish
 ```
 
-**Demos inside the class:**
+**Why two calls?** `shutdown()` says "no new tasks." But existing tasks keep running. `awaitTermination()` blocks the main thread until those tasks finish (or 5 seconds pass). If you skip `awaitTermination()`, your `main()` method may exit before the pool threads finish their work.
 
-| Method | What it shows |
-|--------|--------------|
-| `fixedThreadPoolDemo()` | 6 tasks on 3 threads -- tasks 4, 5, 6 wait in a queue |
-| `cachedThreadPoolDemo()` | 5 tasks -- pool creates 5 threads on demand |
-| `singleThreadExecutorDemo()` | 3 tasks always run on the same thread, in order |
-| `scheduledThreadPoolDemo()` | One-shot 1s delay + periodic task every 500ms |
-| `futureDemo()` | `submit(Callable)` returns `Future`. Call `.get()` to block and get the result |
-| `invokeAllDemo()` | Submit 5 `Callable`s, wait for all results at once |
-| `customThreadPoolDemo()` | `ThreadPoolExecutor` with core=2, max=4, bounded queue=10, `CallerRunsPolicy` |
+---
+
+#### Demo 1: `fixedThreadPoolDemo()` -- Fixed Number of Threads
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(3);   // 3 threads, always
+
+for (int i = 1; i <= 6; i++) {
+    final int taskId = i;
+    executor.submit(() -> {                                   // submit 6 tasks
+        System.out.println("Task " + taskId + " running on " +
+            Thread.currentThread().getName());
+        Thread.sleep(500);                                    // each task takes 500ms
+    });
+}
+
+executor.shutdown();
+executor.awaitTermination(5, TimeUnit.SECONDS);
+```
+
+**What happens:**
+
+The pool has 3 threads. You submit 6 tasks. The first 3 tasks start immediately. Tasks 4, 5, 6 wait in an internal queue until a thread becomes free.
+
+```
+Time       Thread-1        Thread-2        Thread-3        Queue
+────       ────────        ────────        ────────        ─────
+0ms        Task 1          Task 2          Task 3          [Task 4, Task 5, Task 6]
+500ms      Task 1 done     Task 2 done     Task 3 done     
+           picks Task 4    picks Task 5    picks Task 6    []  (queue empty)
+1000ms     Task 4 done     Task 5 done     Task 6 done
+           ALL COMPLETE
+```
+
+Total time: ~1000ms (2 batches of 3), not 3000ms (6 sequential).
+
+**When to use:** You know the workload. Web server handling requests -- set N to the number of CPU cores.
+
+---
+
+#### Demo 2: `cachedThreadPoolDemo()` -- Create Threads on Demand
+
+```java
+ExecutorService executor = Executors.newCachedThreadPool();
+
+for (int i = 1; i <= 5; i++) {
+    final int taskId = i;
+    executor.submit(() -> {
+        System.out.println("Task " + taskId + " on " +
+            Thread.currentThread().getName());
+    });
+}
+```
+
+**How it works:**
+
+| Property | Value |
+|----------|-------|
+| Core threads | 0 (no threads at start) |
+| Max threads | Integer.MAX_VALUE (unlimited) |
+| Idle timeout | 60 seconds (threads die after 60s of no work) |
+| Queue | `SynchronousQueue` (no storage -- hand-off directly to a thread) |
+
+When you submit Task 1, no threads exist. Pool creates Thread-1. If Task 2 arrives and Thread-1 is busy, pool creates Thread-2. If Task 3 arrives and Thread-1 just finished, Thread-1 is reused (no new thread created).
+
+```
+Task 1 arrives -> no free thread -> CREATE Thread-1 -> runs Task 1
+Task 2 arrives -> Thread-1 busy  -> CREATE Thread-2 -> runs Task 2
+Task 3 arrives -> Thread-1 free  -> REUSE Thread-1  -> runs Task 3
+Task 4 arrives -> Thread-2 free  -> REUSE Thread-2  -> runs Task 4
+Task 5 arrives -> Thread-1 free  -> REUSE Thread-1  -> runs Task 5
+```
+
+After 60 seconds of no tasks, idle threads are destroyed automatically.
+
+**When to use:** Many short-lived tasks (e.g., handling quick API calls). **Danger:** If tasks are slow and you submit thousands, it creates thousands of threads and crashes with OutOfMemoryError.
+
+---
+
+#### Demo 3: `singleThreadExecutorDemo()` -- Sequential Execution
+
+```java
+ExecutorService executor = Executors.newSingleThreadExecutor();
+
+for (int i = 1; i <= 3; i++) {
+    final int taskId = i;
+    executor.submit(() -> {
+        System.out.println("Task " + taskId + " on " +
+            Thread.currentThread().getName() + " (always same thread)");
+    });
+}
+```
+
+**Output:**
+```
+Task 1 on pool-1-thread-1 (always same thread)
+Task 2 on pool-1-thread-1 (always same thread)
+Task 3 on pool-1-thread-1 (always same thread)
+```
+
+Only 1 thread ever exists. Tasks run one after another, in the order submitted. The queue stores tasks until the single thread is ready.
+
+**When to use:** When tasks must execute in order (e.g., writing to a log file -- you do not want two threads writing simultaneously).
+
+---
+
+#### Demo 4: `scheduledThreadPoolDemo()` -- Delayed & Periodic Tasks
+
+```java
+ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+
+// Run ONCE after a 1-second delay
+scheduler.schedule(() -> {
+    System.out.println("Delayed task executed!");
+}, 1, TimeUnit.SECONDS);
+
+// Run REPEATEDLY every 500ms, starting immediately
+ScheduledFuture<?> periodicFuture = scheduler.scheduleAtFixedRate(() -> {
+    System.out.println("Periodic task at " + System.currentTimeMillis() % 10000);
+}, 0, 500, TimeUnit.MILLISECONDS);
+//  ^initial delay   ^period
+
+// Let it run for 2 seconds, then cancel
+Thread.sleep(2000);
+periodicFuture.cancel(false);   // false = let current execution finish
+```
+
+**Timeline:**
+```
+Time       What happens
+────       ────────────
+0ms        Periodic task runs (initialDelay = 0)
+500ms      Periodic task runs
+1000ms     Periodic task runs + "Delayed task executed!" (1s delay done)
+1500ms     Periodic task runs
+2000ms     periodicFuture.cancel() -- stops repeating
+```
+
+| Method | What it does |
+|--------|-------------|
+| `schedule(task, 1, SECONDS)` | Run once, after 1 second |
+| `scheduleAtFixedRate(task, 0, 500, MILLIS)` | Run immediately, then every 500ms |
+| `scheduleWithFixedDelay(task, 0, 500, MILLIS)` | Run, wait 500ms after completion, run again |
+
+**Difference between `AtFixedRate` and `WithFixedDelay`:**
+
+```
+scheduleAtFixedRate (every 500ms, task takes 200ms):
+  |--200ms--|          |--200ms--|          |--200ms--|
+  0        200   500  700   1000 1200       (fires every 500ms from START)
+
+scheduleWithFixedDelay (500ms delay after completion, task takes 200ms):
+  |--200ms--|---500ms---|--200ms--|---500ms---|
+  0        200         700       900         1400    (500ms gap between END and next START)
+```
+
+---
+
+#### Demo 5: `futureDemo()` -- Getting a Result Back
+
+**The problem:** `executor.submit(Runnable)` runs a task but returns nothing. What if your task computes a value?
+
+**The solution:** Submit a `Callable<T>` (like Runnable, but returns a value). You get back a `Future<T>`.
+
+```java
+ExecutorService executor = Executors.newSingleThreadExecutor();
+
+// Callable<Integer> -- returns a value (unlike Runnable which returns void)
+Future<Integer> future = executor.submit(() -> {
+    System.out.println("Computing...");
+    Thread.sleep(1000);      // simulate 1 second of work
+    return 42;               // the result
+});
+
+System.out.println("Task submitted, doing other work...");
+System.out.println("Is done? " + future.isDone());    // false (still computing)
+
+Integer result = future.get();   // BLOCKS until the result is ready
+System.out.println("Result: " + result);               // 42
+System.out.println("Is done? " + future.isDone());     // true
+```
+
+**Timeline:**
+
+```
+Main Thread                          Pool Thread
+───────────                          ───────────
+submit(callable)  ──────────────>    starts computing...
+"doing other work..."                Thread.sleep(1000)
+isDone? false                        (still sleeping)
+future.get() -- BLOCKS here          
+  |                                  return 42
+  +--- gets the value <────────────  done
+"Result: 42"
+isDone? true
+```
+
+**Key insight:** `future.get()` blocks the calling thread. This is the limitation that `CompletableFuture` (next section) solves.
+
+| `Future` method | What it does |
+|----------------|-------------|
+| `get()` | Block forever until result is ready |
+| `get(2, SECONDS)` | Block up to 2 seconds, then throw `TimeoutException` |
+| `isDone()` | Check if task finished (non-blocking) |
+| `cancel(true)` | Cancel the task (interrupt if running) |
+| `isCancelled()` | Check if cancelled |
+
+---
+
+#### Demo 6: `invokeAllDemo()` -- Submit Many, Wait for All
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(3);
+
+List<Callable<String>> tasks = new ArrayList<>();
+for (int i = 1; i <= 5; i++) {
+    final int taskId = i;
+    tasks.add(() -> {
+        Thread.sleep(taskId * 100);       // Task 1 = 100ms, Task 5 = 500ms
+        return "Result-" + taskId;
+    });
+}
+
+// Submit ALL at once -- blocks until ALL are done
+List<Future<String>> futures = executor.invokeAll(tasks);
+
+for (Future<String> f : futures) {
+    System.out.println("  " + f.get());   // already done, get() returns immediately
+}
+```
+
+**What happens:**
+
+```
+Pool has 3 threads, 5 tasks submitted:
+
+Thread-1: Task 1 (100ms)  -> done -> Task 4 (400ms)  -> done
+Thread-2: Task 2 (200ms)  -> done -> Task 5 (500ms)  -> done
+Thread-3: Task 3 (300ms)  -> done
+
+invokeAll() returns only when ALL 5 futures are complete.
+Total time: ~700ms (Task 2 finishes at 200ms, picks up Task 5 at 200ms, finishes at 700ms)
+```
+
+**Output:**
+```
+All tasks completed:
+  Result-1
+  Result-2
+  Result-3
+  Result-4
+  Result-5
+```
+
+Results are in the **same order** as the input list, regardless of which finished first.
+
+**Comparison:**
+
+| Method | What it does |
+|--------|-------------|
+| `submit(task)` | Submit one task, returns one `Future` |
+| `invokeAll(list)` | Submit all tasks, **blocks** until all finish, returns list of `Future`s |
+| `invokeAny(list)` | Submit all tasks, **blocks** until the FIRST one finishes, returns its result |
+
+---
+
+#### Demo 7: `customThreadPoolDemo()` -- Full Control with ThreadPoolExecutor
+
+The `Executors.newFixedThreadPool()` and friends are convenience methods. Under the hood, they all create a `ThreadPoolExecutor`. This demo shows you how to configure it directly for full control:
+
+```java
+ThreadPoolExecutor executor = new ThreadPoolExecutor(
+    2,                                     // corePoolSize
+    4,                                     // maximumPoolSize
+    60L, TimeUnit.SECONDS,                 // keepAliveTime
+    new LinkedBlockingQueue<>(10),         // workQueue (bounded, max 10)
+    new ThreadFactory() { ... },           // threadFactory
+    new ThreadPoolExecutor.CallerRunsPolicy()  // rejectionHandler
+);
+```
+
+**Every parameter explained:**
+
+```
+Parameter 1: corePoolSize = 2
+  The pool always keeps at least 2 threads alive, even if they are idle.
+  When you submit a task, if fewer than 2 threads exist, a new thread is created.
+
+Parameter 2: maximumPoolSize = 4
+  The pool can grow up to 4 threads. Extra threads (above core) are created
+  ONLY when the queue is full and more tasks arrive.
+
+Parameter 3: keepAliveTime = 60 seconds
+  If the pool has more than 2 threads (the core size) and a thread has been
+  idle for 60 seconds, it is killed. The pool shrinks back to 2.
+
+Parameter 4: workQueue = LinkedBlockingQueue(10)
+  When all core threads are busy, new tasks go into this queue.
+  This queue holds max 10 tasks. If the queue is full AND pool is at max size,
+  the rejection handler kicks in.
+
+Parameter 5: threadFactory
+  Controls HOW threads are created. Here we give custom names:
+  "CustomThread-0", "CustomThread-1", etc.
+  Also sets daemon=false (threads keep JVM alive until they finish).
+
+Parameter 6: rejectionHandler = CallerRunsPolicy
+  What happens when the queue is full AND all 4 threads are busy?
+  CallerRunsPolicy: The submitting thread runs the task itself.
+  (This provides back-pressure -- the submitter slows down.)
+```
+
+**How the pool grows and shrinks:**
+
+```
+Tasks    Pool State
+─────    ──────────
+Task 1   core < 2 -> CREATE Thread-1, run Task 1
+Task 2   core < 2 -> CREATE Thread-2, run Task 2
+Task 3   core = 2, both busy -> put in QUEUE [Task 3]
+Task 4   core = 2, both busy -> put in QUEUE [Task 3, Task 4]
+...
+Task 12  core = 2, both busy -> QUEUE is FULL (10 items)
+         pool < max(4) -> CREATE Thread-3, run Task 12
+Task 13  QUEUE FULL, pool < max -> CREATE Thread-4, run Task 13
+Task 14  QUEUE FULL, pool = max(4), all busy
+         -> REJECTION HANDLER: CallerRunsPolicy
+         -> The main thread runs Task 14 itself (back-pressure!)
+```
+
+**The 4 rejection policies:**
+
+| Policy | What happens when queue is full AND pool is at max |
+|--------|---------------------------------------------------|
+| `AbortPolicy` (default) | Throws `RejectedExecutionException` -- task is lost |
+| `CallerRunsPolicy` | The thread that called `submit()` runs the task itself -- slows down the producer |
+| `DiscardPolicy` | Silently drops the task -- task is lost, no exception |
+| `DiscardOldestPolicy` | Drops the oldest task in the queue, submits the new one |
+
+In production, `CallerRunsPolicy` is the safest -- no data loss, natural back-pressure.
+
+**The demo prints pool stats:**
+
+```java
+Thread.sleep(100);   // let tasks start
+System.out.println("Active threads: " + executor.getActiveCount());   // how many are running tasks right now
+System.out.println("Pool size: " + executor.getPoolSize());           // how many threads exist
+System.out.println("Queue size: " + executor.getQueue().size());      // how many tasks waiting in queue
+```
+
+**Output:**
+```
+Core pool size: 2
+Max pool size: 4
+Task 1 on CustomThread-0
+Task 2 on CustomThread-1
+Active threads: 2
+Pool size: 2
+Queue size: 6
+```
 
 ---
 
