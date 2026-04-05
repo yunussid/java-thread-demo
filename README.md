@@ -1769,31 +1769,282 @@ SAFE: Nobody starts Phase 2 until ALL Phase 1 work is guaranteed complete.
 
 **File:** `src/main/java/com/threadsdemo/advanced/BlockingQueueDemo.java`
 
-**What it is:** A thread-safe queue that blocks the producer if full and blocks the consumer if empty. No `synchronized`, `wait()`, or `notify()` needed -- it handles everything internally.
+#### What is the Producer-Consumer Pattern?
 
-```java
-BlockingQueue<Order> queue = new LinkedBlockingQueue<>(5);   // bounded, max 5 items
+One of the most common patterns in backend systems. Two types of threads:
+- **Producers** create work items (e.g., incoming HTTP requests, orders, events)
+- **Consumers** process those work items (e.g., save to DB, send email, charge payment)
 
-// Producer:
-queue.put(order);     // BLOCKS if queue has 5 items (back-pressure)
+They are decoupled by a **queue** in between:
 
-// Consumer:
-Order o = queue.take();   // BLOCKS if queue is empty (no busy-waiting)
+```
+  [Producer-1] ──put──┐
+                       ├──> [ QUEUE ] ──take──> [Consumer-1]
+  [Producer-2] ──put──┘    (max 5)    ──take──> [Consumer-2]
+                                       ──take──> [Consumer-3]
 ```
 
-**Graceful shutdown with Poison Pill:**
+**Why not process inline?** During a traffic spike, 1000 orders arrive per second. If each order takes 500ms to process, your API would need 500 threads. With a queue, the API thread just drops the order in (fast) and returns immediately. 3 consumer threads process at their own pace.
+
+#### Why `BlockingQueue` Instead of the Hand-Rolled Version?
+
+In Part 1, you built a `BlockingQueue` manually with `synchronized`, `wait()`, and `notifyAll()`. That was 44 lines of code and easy to get wrong (spurious wakeups, forgetting to release locks, etc.).
+
+`java.util.concurrent.LinkedBlockingQueue` does the same thing in zero lines of your code:
+
+| | Hand-rolled (Part 1) | `LinkedBlockingQueue` |
+|-|---------------------|----------------------|
+| Thread safety | You write `synchronized` | Built-in |
+| Blocking on full | You write `while + wait()` | `put()` blocks automatically |
+| Blocking on empty | You write `while + wait()` | `take()` blocks automatically |
+| Wake-up | You call `notifyAll()` | Handled internally |
+| Bugs | Easy to make | Battle-tested, used in production |
+
+#### The Setup -- Line by Line
 
 ```java
-Order POISON_PILL = new Order(-1, "SHUTDOWN");
-
-// After all producers finish:
-for (int i = 0; i < consumerCount; i++)
-    queue.put(POISON_PILL);
-
-// In consumer loop:
-Order order = queue.take();
-if (order == POISON_PILL) break;
+private static final int QUEUE_CAPACITY = 5;
+private static final BlockingQueue<Order> orderQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 ```
+
+A bounded queue that holds max 5 orders. If a producer tries to `put()` a 6th order, it **blocks** until a consumer removes one. This is called **back-pressure** -- the producer is forced to slow down when the system is overloaded.
+
+```java
+private static final Order POISON_PILL = new Order(-1, "SHUTDOWN");
+```
+
+A special marker object. When a consumer takes this from the queue, it knows it should shut down. More on this later.
+
+```java
+record Order(int id, String item) {
+    @Override
+    public String toString() {
+        return "Order{id=" + id + ", item='" + item + "'}";
+    }
+}
+```
+
+A Java `record` -- a compact class with just two fields (`id` and `item`). Records auto-generate `equals()`, `hashCode()`, and the constructor. The `toString()` override makes log output readable.
+
+#### The Producers -- Line by Line
+
+```java
+int producerCount = 2;
+
+for (int p = 0; p < producerCount; p++) {
+    final int producerId = p + 1;       // 1 and 2
+
+    producers[p] = new Thread(() -> {
+        String[] items = {"Laptop", "Phone", "Tablet", "Monitor", "Keyboard"};
+
+        for (int i = 0; i < items.length; i++) {
+            Order order = new Order(producerId * 100 + i, items[i]);
+            // Producer-1 creates: Order{100, Laptop}, Order{101, Phone}, ...
+            // Producer-2 creates: Order{200, Laptop}, Order{201, Phone}, ...
+
+            System.out.printf("  [Producer-%d]  putting %s  (queue size: %d)%n",
+                    producerId, order, orderQueue.size());
+
+            orderQueue.put(order);   // <-- THE KEY LINE
+            // put() does one of two things:
+            //   1. Queue has space -> adds the order and returns immediately
+            //   2. Queue is FULL (5 items) -> BLOCKS here until a consumer takes one
+
+            Thread.sleep(ThreadLocalRandom.current().nextInt(100, 300));
+            // Sleep 100-300ms between orders (simulates real-world request rate)
+        }
+
+        System.out.printf("  [Producer-%d]  finished producing%n", producerId);
+    }, "Producer-" + producerId);
+
+    producers[p].start();
+}
+```
+
+Each producer creates 5 orders (Laptop, Phone, Tablet, Monitor, Keyboard). With 2 producers, that is 10 orders total.
+
+**What does `put()` do when the queue is full?**
+
+```
+Queue state:  [Order-100] [Order-200] [Order-101] [Order-201] [Order-102]
+                                                                 ^ full (5/5)
+
+Producer-1 calls orderQueue.put(Order-103)
+  |
+  +-> Queue is full!
+  |
+  +-> Producer-1 thread is BLOCKED (sleeping, not spinning)
+  |
+  +-> ... time passes ...
+  |
+  +-> Consumer-2 calls orderQueue.take() -> removes Order-100
+  |
+  +-> Queue has space! Producer-1 UNBLOCKS
+  |
+  +-> Order-103 is added to the queue
+```
+
+No `synchronized`, no `wait()`, no `notifyAll()`. The `LinkedBlockingQueue` does it all internally.
+
+#### The Consumers -- Line by Line
+
+```java
+int consumerCount = 3;
+
+for (int c = 0; c < consumerCount; c++) {
+    final int consumerId = c + 1;       // 1, 2, and 3
+
+    consumers[c] = new Thread(() -> {
+        while (true) {                  // infinite loop -- runs until shutdown
+
+            Order order = orderQueue.take();   // <-- THE KEY LINE
+            // take() does one of two things:
+            //   1. Queue has items -> removes one and returns it immediately
+            //   2. Queue is EMPTY -> BLOCKS here until a producer adds one
+
+            if (order == POISON_PILL) {
+                System.out.printf("  [Consumer-%d]  received shutdown signal%n", consumerId);
+                break;                  // exit the infinite loop
+            }
+
+            System.out.printf("  [Consumer-%d]  processing %s%n", consumerId, order);
+            Thread.sleep(ThreadLocalRandom.current().nextInt(300, 700));
+            // Simulate 300-700ms of processing (e.g., DB write, payment charge)
+            System.out.printf("  [Consumer-%d]  completed  %s%n", consumerId, order);
+        }
+    }, "Consumer-" + consumerId);
+
+    consumers[c].start();
+}
+```
+
+Each consumer runs an infinite `while(true)` loop: take an order, process it, repeat. If the queue is empty, `take()` blocks -- the consumer sleeps efficiently (no CPU wasted) until a producer adds something.
+
+**The problem:** This loop runs forever. How do you stop it?
+
+#### The Poison Pill Pattern -- Graceful Shutdown
+
+You cannot just call `Thread.stop()` (deprecated and unsafe). You cannot set a `boolean running = false` because the consumer might be blocked on `take()` and will never check the flag.
+
+The **Poison Pill** is an elegant solution: send a special "shutdown" order through the queue itself:
+
+```java
+// Step 1: Wait for all producers to finish
+for (Thread p : producers) p.join();
+System.out.println("All producers finished. Sending poison pills...");
+
+// Step 2: Send one poison pill PER consumer
+for (int c = 0; c < consumerCount; c++) {
+    orderQueue.put(POISON_PILL);
+}
+
+// Step 3: Wait for all consumers to finish
+for (Thread c : consumers) c.join();
+```
+
+**Why one poison pill per consumer?**
+
+```
+Queue after producers finish:  [Order-204] [POISON] [POISON] [POISON]
+
+Consumer-1 calls take() -> gets Order-204 -> processes it
+Consumer-1 calls take() -> gets POISON_PILL -> breaks out of loop
+Consumer-2 calls take() -> gets POISON_PILL -> breaks out of loop
+Consumer-3 calls take() -> gets POISON_PILL -> breaks out of loop
+
+ALL consumers have exited cleanly.
+```
+
+If you sent only 1 poison pill, one consumer would get it and exit, but the other two would be stuck on `take()` forever (deadlock).
+
+**Why `order == POISON_PILL` (reference equality)?**
+
+```java
+if (order == POISON_PILL) {   // == compares object REFERENCE, not content
+```
+
+This uses `==` (same object in memory), not `.equals()` (same content). Since `POISON_PILL` is a `static final` constant, the consumer is literally checking "is this the exact same object I defined at the top?" This is faster and avoids false positives -- a real order with id=-1 would not match.
+
+#### The Complete Timeline
+
+```
+Time     Producer-1          Producer-2          Queue (max 5)          Consumer-1       Consumer-2       Consumer-3
+────     ──────────          ──────────          ─────────────          ──────────       ──────────       ──────────
+0ms      put(100,Laptop)     put(200,Laptop)     [100-Lap, 200-Lap]    take->100-Lap    take->200-Lap    (empty,blocked)
+                                                                        processing...    processing...
+
+200ms    put(101,Phone)      put(201,Phone)      [101-Ph, 201-Ph]                                        take->101-Ph
+                                                                                                          processing...
+
+400ms    put(102,Tablet)     put(202,Tablet)     [201-Ph, 102-Tab,     done 100-Lap
+                                                  202-Tab]             take->201-Ph
+
+600ms    put(103,Monitor)    put(203,Monitor)     [102-Tab, 202-Tab,                    done 200-Lap
+                                                   103-Mon, 203-Mon]                    take->102-Tab
+                                                   (4/5)
+
+800ms    put(104,Keyboard)   put(204,Keyboard)    [202-Tab, 103-Mon,                                     done 101-Ph
+                                                   203-Mon, 104-Key,                                     take->202-Tab
+                                                   204-Key]  FULL!
+
+         Producer-1 DONE    Producer-2 tries
+                            put() -> BLOCKED!
+                            (queue is FULL)
+
+~900ms                                                                  done 201-Ph
+                                                                        take->103-Mon
+                                                   SPACE! Producer-2
+                                                   unblocks, puts 204
+
+~1200ms  DONE               DONE                  Producers join()
+                                                   Main sends 3 POISON_PILLs
+
+                                                   [POISON, POISON,     take->POISON     take->POISON     take->POISON
+                                                    POISON]             break!           break!           break!
+
+         ALL CONSUMERS EXIT CLEANLY.
+         Queue is empty: true
+```
+
+#### `put()` vs `offer()` vs `add()` -- Which to Use?
+
+| Method | When queue is full | Return type |
+|--------|-------------------|-------------|
+| `put(item)` | **BLOCKS** until space is available | void |
+| `offer(item)` | Returns `false` immediately | boolean |
+| `offer(item, 2, SECONDS)` | Waits up to 2 seconds, then returns `false` | boolean |
+| `add(item)` | Throws `IllegalStateException` | boolean |
+
+| Method | When queue is empty | Return type |
+|--------|-------------------|-------------|
+| `take()` | **BLOCKS** until an item is available | item |
+| `poll()` | Returns `null` immediately | item or null |
+| `poll(2, SECONDS)` | Waits up to 2 seconds, then returns `null` | item or null |
+| `peek()` | Returns head without removing (null if empty) | item or null |
+
+In this demo, we use `put()`/`take()` because we WANT blocking -- that is the whole point of back-pressure.
+
+#### Why This Pattern Matters in Real Systems
+
+```
+Without BlockingQueue (inline processing):
+
+  API Thread receives order -> processes order (500ms) -> returns response
+  
+  Problem: During a spike of 1000 orders/second, you need 500 threads.
+           Server crashes with OutOfMemoryError.
+
+With BlockingQueue:
+
+  API Thread receives order -> queue.put(order) (instant) -> returns response
+  3 Consumer threads process at their own pace (500ms each)
+  
+  Result: API stays fast. Consumers process at ~6 orders/second.
+          Queue absorbs the burst. No crash.
+          If queue fills up, put() blocks -> API slows down naturally (back-pressure).
+```
+
+This is the foundation of every high-throughput system: Kafka, RabbitMQ, SQS -- they are all variations of this producer-consumer-queue pattern.
 
 ---
 
