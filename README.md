@@ -2286,6 +2286,77 @@ Time     Producer-1          Producer-2          Queue (max 5)          Consumer
 
 In this demo, we use `put()`/`take()` because we WANT blocking -- that is the whole point of back-pressure.
 
+#### FAQ: 2 Producers x 5 Orders Each + 3 Consumers = How Many Orders Processed?
+
+**Answer: 10 total. NOT 15. NOT 5.**
+
+This is a common confusion. Let me break it down:
+
+**How many orders are CREATED?**
+
+```
+Producer-1 creates 5 orders:  Order-100, Order-101, Order-102, Order-103, Order-104
+Producer-2 creates 5 orders:  Order-200, Order-201, Order-202, Order-203, Order-204
+
+Total CREATED: 10 orders
+```
+
+Both producers put orders into the SAME queue. The queue does not care which producer sent which order.
+
+**How many orders are PROCESSED?**
+
+The 3 consumers share the SAME queue. They do NOT each get their own copy. When a consumer calls `take()`, that order is **removed** from the queue -- no other consumer can see it.
+
+```
+Queue:  [100] [200] [101] [201] [102] [202] [103] [203] [104] [204]
+
+Consumer-1: take() -> gets 100 (REMOVED from queue)  -> processes it
+Consumer-2: take() -> gets 200 (REMOVED from queue)  -> processes it
+Consumer-3: take() -> gets 101 (REMOVED from queue)  -> processes it
+Consumer-1: take() -> gets 201 (finished 100, ready for more)
+Consumer-3: take() -> gets 102
+Consumer-2: take() -> gets 202
+...
+
+Total PROCESSED: 10 (every order is processed by exactly ONE consumer)
+```
+
+**How are the 10 orders split across 3 consumers?**
+
+The split is NOT equal. It depends on which consumer is faster:
+
+```
+Consumer-1 (fast):  processed 4 orders   (100, 201, 103, 204)
+Consumer-2 (slow):  processed 3 orders   (200, 202, 104)
+Consumer-3 (medium): processed 3 orders  (101, 102, 203)
+                                   Total = 10
+```
+
+A faster consumer calls `take()` sooner, so it gets more orders. A slower consumer gets fewer. But the total is always exactly 10.
+
+**Why the confusion happens:**
+
+| Wrong thinking | Why it is wrong |
+|----------------|----------------|
+| "3 consumers x 5 = 15 orders" | Consumers do NOT duplicate orders. `take()` REMOVES the item from the queue. Once taken, it is gone forever |
+| "Each consumer gets 5 orders" | There is no assignment. Consumers compete. Whoever calls `take()` first gets the next order |
+| "Only 5 orders because 1 producer" | Both producers put into the SAME queue. 5 + 5 = 10 orders total |
+
+**The rule:**
+
+```
+Total orders PRODUCED  =  (number of producers) x (orders per producer)
+                       =  2 x 5 = 10
+
+Total orders CONSUMED  =  SAME 10  (split unevenly across consumers)
+
+More consumers  =  FASTER processing (parallel), NOT more orders
+Less consumers  =  SLOWER processing, still processes all 10
+
+Consumer count does NOT affect how many orders exist.
+It only affects how fast they are processed.
+```
+
 #### Why This Pattern Matters in Real Systems
 
 ```
