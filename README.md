@@ -1888,6 +1888,10 @@ No `synchronized`, no `wait()`, no `notifyAll()`. The `LinkedBlockingQueue` does
 
 #### The Consumers -- Line by Line
 
+**Why an Infinite Loop?**
+
+A consumer does not know in advance how many orders it will process. Orders arrive unpredictably — sometimes 10 per second, sometimes none for 5 minutes. So the consumer must keep asking "is there anything for me?" forever, until someone tells it to stop.
+
 ```java
 int consumerCount = 3;
 
@@ -1895,67 +1899,305 @@ for (int c = 0; c < consumerCount; c++) {
     final int consumerId = c + 1;       // 1, 2, and 3
 
     consumers[c] = new Thread(() -> {
-        while (true) {                  // infinite loop -- runs until shutdown
+```
 
-            Order order = orderQueue.take();   // <-- THE KEY LINE
-            // take() does one of two things:
-            //   1. Queue has items -> removes one and returns it immediately
-            //   2. Queue is EMPTY -> BLOCKS here until a producer adds one
+We create 3 consumer threads. Each runs independently. They compete to `take()` from the same queue — whoever calls `take()` first gets the next order.
 
+```java
+        while (true) {                  // loop forever until we break out
+```
+
+This is the **event loop**. It runs one iteration per order. Each iteration does: take → check if poison → process → repeat.
+
+```java
+            Order order = orderQueue.take();
+```
+
+**This is the most important line in the entire consumer.** `take()` does one of two things:
+
+```
+Scenario A: Queue has items
+  
+  Queue:  [Order-100] [Order-101] [Order-102]
+  
+  Consumer-1 calls take()
+    -> removes Order-100 from the front
+    -> returns it IMMEDIATELY
+    -> Consumer-1 now has order = Order-100
+  
+  Queue:  [Order-101] [Order-102]
+
+
+Scenario B: Queue is EMPTY
+
+  Queue:  []  (empty)
+  
+  Consumer-1 calls take()
+    -> nothing to take
+    -> Consumer-1 thread goes to SLEEP (not spinning, not burning CPU)
+    -> Consumer-1 is STUCK on this line
+    -> ... time passes ...
+    -> Producer-2 calls queue.put(Order-201)
+    -> Consumer-1 WAKES UP
+    -> returns Order-201
+    -> Consumer-1 now has order = Order-201
+    
+  The consumer spends ZERO CPU while waiting. It is asleep.
+  This is why take() is better than polling in a loop:
+  
+  BAD:  while (queue.isEmpty()) { }          // burns 100% CPU doing nothing
+  GOOD: Order order = queue.take();          // sleeps until there is something
+```
+
+```java
             if (order == POISON_PILL) {
                 System.out.printf("  [Consumer-%d]  received shutdown signal%n", consumerId);
-                break;                  // exit the infinite loop
+                break;                  // EXIT the while(true) loop
             }
+```
 
+Before processing, the consumer checks: "Is this a real order, or is this the shutdown signal?" If it is the poison pill, `break` exits the `while(true)` loop, the `run()` method ends, and the thread dies cleanly.
+
+```java
             System.out.printf("  [Consumer-%d]  processing %s%n", consumerId, order);
             Thread.sleep(ThreadLocalRandom.current().nextInt(300, 700));
-            // Simulate 300-700ms of processing (e.g., DB write, payment charge)
             System.out.printf("  [Consumer-%d]  completed  %s%n", consumerId, order);
-        }
+```
+
+Process the order (simulated with sleep). In a real system, this is where you would save to a database, charge a payment, send an email, etc.
+
+```java
+        }  // end while(true) -- loops back to take()
     }, "Consumer-" + consumerId);
 
     consumers[c].start();
 }
 ```
 
-Each consumer runs an infinite `while(true)` loop: take an order, process it, repeat. If the queue is empty, `take()` blocks -- the consumer sleeps efficiently (no CPU wasted) until a producer adds something.
+After processing, the loop goes back to `take()`. If the queue is empty, the consumer sleeps. If there is another order, it processes it. This repeats forever — until a poison pill arrives.
 
-**The problem:** This loop runs forever. How do you stop it?
+**One iteration of a consumer's life, visualized:**
+
+```
+START OF LOOP ITERATION
+     |
+     v
+  orderQueue.take()
+     |
+     +---> Queue empty? YES --> thread SLEEPS here (0% CPU)
+     |                              |
+     |                         producer puts() something
+     |                              |
+     |                         thread WAKES UP, gets the order
+     |                              |
+     +---> Queue has items? YES --> removes one, returns it
+     |
+     v
+  Is it POISON_PILL?
+     |
+     +---> YES --> break (exit loop, thread dies)
+     |
+     +---> NO  --> process the order (300-700ms)
+                       |
+                       v
+                  LOOP BACK TO take()
+```
+
+---
 
 #### The Poison Pill Pattern -- Graceful Shutdown
 
-You cannot just call `Thread.stop()` (deprecated and unsafe). You cannot set a `boolean running = false` because the consumer might be blocked on `take()` and will never check the flag.
+**The problem:** Consumers run `while(true)`. How do you stop them?
 
-The **Poison Pill** is an elegant solution: send a special "shutdown" order through the queue itself:
+**Approach 1: Set a boolean flag -- DOES NOT WORK**
 
 ```java
-// Step 1: Wait for all producers to finish
-for (Thread p : producers) p.join();
-System.out.println("All producers finished. Sending poison pills...");
+volatile boolean running = true;
 
-// Step 2: Send one poison pill PER consumer
-for (int c = 0; c < consumerCount; c++) {
-    orderQueue.put(POISON_PILL);
+// Consumer:
+while (running) {              // checks flag each iteration
+    Order order = queue.take();  // BUT -- consumer is STUCK HERE sleeping!
+    process(order);              // never reaches the while check
 }
 
+// Main thread:
+running = false;               // sets the flag, but consumer is asleep on take()
+                               // consumer will NEVER wake up to check the flag
+                               // DEADLOCK -- consumer is stuck forever
+```
+
+The consumer is blocked on `take()`. It will never reach the top of the `while` loop to check `running`. The flag is useless.
+
+**Approach 2: Use `Thread.interrupt()` -- WORKS but ugly**
+
+```java
+consumerThread.interrupt();    // wakes up the thread blocked on take()
+                               // take() throws InterruptedException
+                               // consumer must catch it and exit
+
+// Consumer:
+try {
+    Order order = queue.take();
+} catch (InterruptedException e) {
+    break;  // exit loop
+}
+```
+
+This works, but you lose the order that was being processed. And you have to handle `InterruptedException` everywhere.
+
+**Approach 3: POISON PILL -- The elegant solution**
+
+Instead of fighting the queue, **work WITH the queue**. Send a special "shutdown" message THROUGH the queue. The consumer will naturally `take()` it and know to stop.
+
+```java
+// A special Order object that means "shut down"
+private static final Order POISON_PILL = new Order(-1, "SHUTDOWN");
+```
+
+This is just a regular `Order` object, but we treat it as a signal. The consumer checks for it after every `take()`.
+
+**The shutdown sequence -- step by step:**
+
+```java
+// Step 1: Wait for ALL producers to finish
+for (Thread p : producers) p.join();
+```
+
+`join()` blocks the main thread until the producer thread completes. After this loop, all 10 orders (5 per producer) have been put into the queue. No more orders will ever arrive.
+
+```java
+System.out.println("All producers finished. Sending poison pills to consumers...");
+```
+
+At this point, the queue might still have unprocessed orders. Consumers are still running, processing them. We do NOT send poison pills yet until we are sure all real orders are in the queue.
+
+```java
+// Step 2: Send one poison pill PER consumer
+for (int c = 0; c < consumerCount; c++) {   // consumerCount = 3
+    orderQueue.put(POISON_PILL);              // puts 3 poison pills into the queue
+}
+```
+
+**Why 3 poison pills?** Because there are 3 consumers. Each consumer `take()`s one item at a time from the queue. Each poison pill will be consumed by exactly ONE consumer.
+
+Let me show you what would happen with different numbers:
+
+```
+With 3 POISON PILLs (CORRECT):
+
+  Queue: [Order-204] [POISON] [POISON] [POISON]
+  
+  Consumer-1: take() -> Order-204 -> processes it
+  Consumer-1: take() -> POISON_PILL -> break! (exits cleanly)
+  Consumer-2: take() -> POISON_PILL -> break! (exits cleanly)
+  Consumer-3: take() -> POISON_PILL -> break! (exits cleanly)
+  
+  Result: ALL 3 consumers exit. Program finishes.
+
+
+With 1 POISON PILL (BUG):
+
+  Queue: [Order-204] [POISON]
+  
+  Consumer-1: take() -> Order-204 -> processes it
+  Consumer-2: take() -> POISON_PILL -> break! (exits cleanly)
+  Consumer-1: take() -> ??? queue is empty -> BLOCKS FOREVER
+  Consumer-3: take() -> ??? queue is empty -> BLOCKS FOREVER
+  
+  Result: 2 consumers are STUCK. Program hangs FOREVER. You have to kill -9 the process.
+
+
+With 5 POISON PILLs (wastes 2, but still works):
+
+  Queue: [POISON] [POISON] [POISON] [POISON] [POISON]
+  
+  Consumer-1: take() -> POISON_PILL -> break!
+  Consumer-2: take() -> POISON_PILL -> break!
+  Consumer-3: take() -> POISON_PILL -> break!
+  
+  Queue still has 2 unclaimed POISON_PILLs, but nobody cares -- all consumers are dead.
+  Result: Works, but wasteful.
+```
+
+**Rule: Always send exactly N poison pills for N consumers.**
+
+```java
 // Step 3: Wait for all consumers to finish
 for (Thread c : consumers) c.join();
 ```
 
-**Why one poison pill per consumer?**
+After sending the poison pills, the main thread waits for all consumer threads to actually finish. This ensures all orders are fully processed (not just taken from the queue, but completed).
 
-```
-Queue after producers finish:  [Order-204] [POISON] [POISON] [POISON]
-
-Consumer-1 calls take() -> gets Order-204 -> processes it
-Consumer-1 calls take() -> gets POISON_PILL -> breaks out of loop
-Consumer-2 calls take() -> gets POISON_PILL -> breaks out of loop
-Consumer-3 calls take() -> gets POISON_PILL -> breaks out of loop
-
-ALL consumers have exited cleanly.
+```java
+System.out.println("All orders processed. Queue is empty: " + orderQueue.isEmpty());
+// Output: All orders processed. Queue is empty: true
 ```
 
-If you sent only 1 poison pill, one consumer would get it and exit, but the other two would be stuck on `take()` forever (deadlock).
+**The complete shutdown flow:**
+
+```
+STEP 1: Main thread waits for producers to finish
+        ─────────────────────────────────────────
+
+  Main:      producers[0].join()  --> waits for Producer-1 to finish all 5 orders
+             producers[1].join()  --> waits for Producer-2 to finish all 5 orders
+  
+  At this point: 10 orders have been put(). Producers are done.
+                 Queue may still have some orders being processed by consumers.
+
+
+STEP 2: Main thread sends poison pills
+        ────────────────────────────────
+
+  Main:      orderQueue.put(POISON_PILL)   --> 1st pill enters queue
+             orderQueue.put(POISON_PILL)   --> 2nd pill enters queue
+             orderQueue.put(POISON_PILL)   --> 3rd pill enters queue
+
+  Queue now: [...remaining orders...] [POISON] [POISON] [POISON]
+  
+  The pills go to the END of the queue. This is important!
+  It means consumers will process ALL remaining real orders BEFORE hitting a pill.
+  No orders are lost.
+
+
+STEP 3: Consumers naturally consume remaining orders, then hit the pills
+        ──────────────────────────────────────────────────────────────────
+
+  Consumer-1: take() -> Order-203 -> processes it -> take() -> POISON -> break!
+  Consumer-2: take() -> Order-204 -> processes it -> take() -> POISON -> break!
+  Consumer-3: take() -> POISON -> break!  (was idle, no orders left for it)
+
+
+STEP 4: Main thread confirms all consumers are done
+        ────────────────────────────────────────────
+
+  Main:      consumers[0].join()  --> Consumer-1 has exited
+             consumers[1].join()  --> Consumer-2 has exited
+             consumers[2].join()  --> Consumer-3 has exited
+  
+  Main:      "All orders processed. Queue is empty: true"
+  
+  Program exits cleanly. No threads stuck. No orders lost.
+```
+
+**Why the pills go to the END of the queue:**
+
+```
+Queue at the moment we send pills:
+
+  FRONT                                              BACK
+  [Order-103] [Order-204] [Order-104]   <-- real orders still waiting
+                                         [POISON] [POISON] [POISON]  <-- pills added at the end
+
+  Consumers take from the FRONT. So they process:
+    Order-103 first
+    Order-204 second
+    Order-104 third
+    POISON fourth   --> Consumer exits
+
+  EVERY real order is processed before any consumer shuts down.
+  This is why the poison pill pattern guarantees NO DATA LOSS.
+```
 
 **Why `order == POISON_PILL` (reference equality)?**
 
@@ -1963,7 +2205,27 @@ If you sent only 1 poison pill, one consumer would get it and exit, but the othe
 if (order == POISON_PILL) {   // == compares object REFERENCE, not content
 ```
 
-This uses `==` (same object in memory), not `.equals()` (same content). Since `POISON_PILL` is a `static final` constant, the consumer is literally checking "is this the exact same object I defined at the top?" This is faster and avoids false positives -- a real order with id=-1 would not match.
+This uses `==` (same object in memory), not `.equals()` (same content):
+
+```
+POISON_PILL is created ONCE:
+  private static final Order POISON_PILL = new Order(-1, "SHUTDOWN");
+  This object lives at memory address 0x7F3A (for example).
+
+When the consumer takes it from the queue:
+  Order order = queue.take();   // order now points to address 0x7F3A
+  
+  order == POISON_PILL          // is 0x7F3A == 0x7F3A? YES. Same object.
+
+Why not use .equals()?
+  A real order could theoretically have id=-1 and item="SHUTDOWN".
+  That would have a DIFFERENT memory address (e.g., 0x8B2C).
+  
+  realOrder == POISON_PILL      // 0x8B2C == 0x7F3A? NO. Different objects. SAFE.
+  realOrder.equals(POISON_PILL) // id matches, item matches? YES. FALSE POSITIVE!
+  
+  Using == prevents false positives. Only THE EXACT poison pill object triggers shutdown.
+```
 
 #### The Complete Timeline
 
